@@ -98,6 +98,19 @@ fn pathological_segment_patterns_are_linear() {
     assert!(!SegmentPattern::new(&pattern, true).matches(&name));
 }
 
+/// An unterminated `[` makes every later `[` literal without rescanning for a `]`.
+#[test]
+fn unterminated_brackets_compile_linearly() {
+    let pattern = "[".repeat(1_000_000);
+    let compiled = SegmentPattern::new(&pattern, true);
+    assert!(compiled.matches(&pattern));
+    assert!(!compiled.matches("[]"));
+    // every `[` after the first unterminated one is literal too
+    let compiled = SegmentPattern::new("[a[b", true);
+    assert!(compiled.matches("[a[b"));
+    assert!(!compiled.matches("ab"));
+}
+
 /// Compiling is linear in the parts: only the steps the first part leads to
 /// are built, each consuming the parts it covers, so a long literal tail is
 /// joined once rather than once per part before it.

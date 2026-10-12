@@ -828,6 +828,9 @@ impl SegmentPattern {
         let chars: Vec<char> = pattern.chars().collect();
         let mut tokens = Vec::new();
         let mut i = 0;
+        // Once a `[` finds no `]` ahead, no later `[` can either; skipping their
+        // scans keeps a run of unterminated brackets linear.
+        let mut unterminated = false;
         while let Some(&c) = chars.get(i) {
             i += 1;
             match c {
@@ -837,13 +840,15 @@ impl SegmentPattern {
                     }
                 }
                 '?' => tokens.push(Token::Any),
-                '[' => match parse_class(&chars, i) {
-                    Some((token, end)) => {
+                '[' if !unterminated => {
+                    if let Some((token, end)) = parse_class(&chars, i) {
                         tokens.push(token);
                         i = end;
+                    } else {
+                        unterminated = true;
+                        tokens.push(Token::Char('['));
                     }
-                    None => tokens.push(Token::Char('[')),
-                },
+                }
                 c => tokens.push(Token::Char(c)),
             }
         }

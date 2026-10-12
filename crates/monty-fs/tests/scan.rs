@@ -425,6 +425,10 @@ fn huge_pattern_parts_are_refused_without_copying_them() {
     let part = "x".repeat(255) + "é";
     let err = scan(&mut table, glob("/mnt", &[&part, "*"])).unwrap_err();
     assert_eq!(err.into_exception().exc_type(), ExcType::OSError);
+    // a `/` inside a part does not hide an over-long name behind a short first piece
+    let part = format!("a/{}", "[".repeat(10_000_000));
+    let err = scan(&mut table, glob("/mnt", &[&part, "*"])).unwrap_err();
+    assert_eq!(err.into_exception().exc_type(), ExcType::OSError);
 }
 
 /// The visit cap is a `RuntimeError`: an `OSError` would be swallowed by glob as an empty match.

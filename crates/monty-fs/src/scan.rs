@@ -62,22 +62,25 @@ pub(super) fn execute(args: &ScanArgs, mounts: &mut [Mount], root: usize) -> Res
 ///
 /// Every part gets its separator, an empty one included, so the component
 /// count seen is the pattern's own: emptied parts must not smuggle a long
-/// tail past the limit and into the selector.
+/// tail past the limit and into the selector. A `/` inside a part (which the
+/// interpreter never sends) splits it the same way, so no piece of what the
+/// selector compiles escapes the name limit.
 fn reject_overlong_pattern(parts: &[String]) -> Result<(), MountError> {
     /// One more component than paths may have, and one more byte than a name.
     const COMPONENTS: usize = 65;
     const NAME_BYTES: usize = 256;
     let mut joined = String::new();
-    for (index, part) in parts.iter().take(COMPONENTS).enumerate() {
-        // Rounded up to a character boundary, so an over-long part stays over-long.
-        let mut end = part.len().min(NAME_BYTES);
-        while !part.is_char_boundary(end) {
+    let segments = parts.iter().flat_map(|part| part.split('/')).take(COMPONENTS);
+    for (index, segment) in segments.enumerate() {
+        // Rounded up to a character boundary, so an over-long segment stays over-long.
+        let mut end = segment.len().min(NAME_BYTES);
+        while !segment.is_char_boundary(end) {
             end += 1;
         }
         if index > 0 {
             joined.push('/');
         }
-        joined.push_str(&part[..end]);
+        joined.push_str(&segment[..end]);
     }
     reject_overlong_path(&joined)
 }

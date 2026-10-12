@@ -204,7 +204,9 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 }
                 Self::ImportStubs(modules)
             }
-            // An empty pattern is a plain listing: `ScanArgs::glob` never builds `Some([])`.
+            // An empty pattern reads as a plain listing. The interpreter sends `listing(Some(0))`
+            // for a fully literal glob, and `glob` with no parts derives `max_depth: Some(0)` too,
+            // so either way the host lists the root alone.
             os_call::Call::Scan(scan) => Self::Scan(ScanArgs {
                 path: MontyPath::new(scan.path),
                 max_depth: scan.max_depth,
