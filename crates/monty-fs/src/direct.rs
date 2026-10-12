@@ -11,9 +11,8 @@ use monty_types::{FileMode, MontyObject, normalize_virtual_path};
 use super::{
     common::{
         MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes, host_append_bytes,
-        host_append_text, host_is_dir, host_is_file, host_iterdir, host_mkdir, host_path_info, host_read_bytes,
-        host_read_text, host_rmdir, host_stat, host_unlink, host_write_bytes, host_write_text, map_io,
-        reject_non_regular,
+        host_append_text, host_is_dir, host_is_file, host_iterdir, host_mkdir, host_read_bytes, host_read_text,
+        host_rmdir, host_stat, host_unlink, host_write_bytes, host_write_text, map_io, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -93,7 +92,7 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
 /// as [`bool_query`] would answer each.
 pub(super) fn path_info(path: &str, ctx: &MountContext<'_>) -> Result<PathInfo, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    Ok(host_path_info(ctx.mount_dir, target.for_dir_op()))
+    Ok(PathInfo::from_host(ctx.mount_dir, target.for_dir_op()))
 }
 
 /// Performs the open-time effect for `open()` and returns the file handle.

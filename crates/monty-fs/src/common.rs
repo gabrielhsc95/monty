@@ -476,6 +476,8 @@ pub(super) fn join_mount_relative(rel: &str, child: &str) -> String {
 ///
 /// `exists`, `is_dir` and `is_file` follow a final symlink; `is_symlink` does
 /// not, so a dangling or escaping link is `is_symlink` alone with `exists` false.
+/// Not an `Option<EntryInfo>`: listings report that link, and a socket or FIFO
+/// exists with all three flags false.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PathInfo {
     /// The entry as a scan reports it.
@@ -494,19 +496,19 @@ impl PathInfo {
         },
         exists: false,
     };
-}
 
-/// Answers [`PathInfo`] for `rel` with one `metadata` and one `symlink_metadata`
-/// call, where the separate predicates would cost four.
-pub(super) fn host_path_info(dir: &Dir, rel: &str) -> PathInfo {
-    let followed = dir.metadata(rel).ok();
-    PathInfo {
-        info: EntryInfo {
-            is_dir: followed.as_ref().is_some_and(Metadata::is_dir),
-            is_file: followed.as_ref().is_some_and(Metadata::is_file),
-            is_symlink: dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink()),
-        },
-        exists: followed.is_some(),
+    /// Describes `rel` with one `metadata` and one `symlink_metadata` call,
+    /// where the separate predicates would cost four.
+    pub(super) fn from_host(dir: &Dir, rel: &str) -> Self {
+        let followed = dir.metadata(rel).ok();
+        Self {
+            info: EntryInfo {
+                is_dir: followed.as_ref().is_some_and(Metadata::is_dir),
+                is_file: followed.as_ref().is_some_and(Metadata::is_file),
+                is_symlink: dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink()),
+            },
+            exists: followed.is_some(),
+        }
     }
 }
 
