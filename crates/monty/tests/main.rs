@@ -376,6 +376,28 @@ fn dynamic_type_with_builtin_base_raises_type_error() {
 }
 
 #[test]
+fn class_with_builtin_exception_base_raises_type_error() {
+    let code = "class MyError(Exception):\n    pass";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    class MyError(Exception):\n        pass\nTypeError: type 'Exception' is not an acceptable base type"
+    );
+}
+
+#[test]
+fn dynamic_type_with_builtin_exception_base_raises_type_error() {
+    let code = "type('E', (ValueError,), {})";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('E', (ValueError,), {})\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nTypeError: type 'ValueError' is not an acceptable base type"
+    );
+}
+
+#[test]
 fn dynamic_type_with_user_class_base_succeeds() {
     let code = "A = type('A', (), {'x': 1})\nB = type('B', (A,), {'y': 2})\nb = B()\nassert b.x == 1\nassert b.y == 2";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();

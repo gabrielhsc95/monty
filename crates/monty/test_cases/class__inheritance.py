@@ -128,5 +128,83 @@ try:
 except TypeError as e:
     assert str(e) == "Cannot create a consistent method resolution order (MRO) for bases MroX, MroY"
 
+# === Special "dunder" method inheritance ===
+
+class ContainerBase:
+    def __init__(self, data):
+        self.data = data
+
+    def __str__(self):
+        return 'Container(' + str(self.data) + ')'
+
+    def __eq__(self, other):
+        if type(self) is type(other):
+            return self.data == other.data
+        return False
+
+    def __contains__(self, item):
+        return item in self.data
+
+    def __iter__(self):
+        return iter(self.data)
+
+
+class MyContainer(ContainerBase):
+    def is_empty(self):
+        return len(self.data) == 0
+
+
+c1 = MyContainer([1, 2, 3])
+c2 = MyContainer([1, 2, 3])
+c3 = MyContainer([4, 5])
+
+assert str(c1) == 'Container([1, 2, 3])'
+assert c1 == c2
+assert not (c1 == c3)
+assert 2 in c1
+assert 9 not in c1
+
+items = []
+for x in c3:
+    items.append(x)
+assert items == [4, 5]
+assert not c1.is_empty()
+
+# Test object ordering in bases
+class ObjBase:
+    pass
+
+
+class ValidObjSub(ObjBase, object):
+    pass
+
+
+assert isinstance(ValidObjSub(), ObjBase)
+
+try:
+    class InvalidObjSub(object, ObjBase):
+        pass
+
+    assert False, "expected MRO conflict with object first"
+except TypeError as e:
+    assert str(e) == "Cannot create a consistent method resolution order (MRO) for bases object, ObjBase"
+
+class ObjA:
+    pass
+
+
+class ObjB:
+    pass
+
+
+try:
+    class InvalidMidObjSub(ObjA, object, ObjB):
+        pass
+
+    assert False, "expected MRO conflict with object in middle"
+except TypeError as e:
+    assert str(e) == "Cannot create a consistent method resolution order (MRO) for bases object, ObjB"
+
 print("success")
+
 

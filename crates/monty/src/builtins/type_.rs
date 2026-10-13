@@ -144,6 +144,12 @@ fn create_class(
                     "type '{type_name}' is not an acceptable base type"
                 )));
             }
+            Value::Builtin(Builtins::ExcType(exc_type)) => {
+                let type_name: &'static str = (*exc_type).into();
+                return Err(ExcType::type_error(format!(
+                    "type '{type_name}' is not an acceptable base type"
+                )));
+            }
             Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => {
                 let HeapData::Class(cls) = vm.heap.get(*id) else {
                     unreachable!()
@@ -162,6 +168,15 @@ fn create_class(
                 )));
             }
         }
+    }
+
+    if let Some(idx) = base_names.iter().position(|&n| n == "object")
+        && idx < base_names.len() - 1
+    {
+        return Err(ExcType::type_error(format!(
+            "Cannot create a consistent method resolution order (MRO) for bases {}",
+            base_names[idx..].join(", ")
+        )));
     }
 
     let mro = compute_c3_mro(&bases_ids, &base_names, vm.heap)?;

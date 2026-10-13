@@ -51,6 +51,11 @@ pub(crate) struct Class {
 }
 
 impl Class {
+    /// Returns the direct base classes in declaration order.
+    pub(crate) fn bases(&self) -> &[HeapId] {
+        &self.bases
+    }
+
     /// Returns the method resolution order (base classes in C3 linearization order).
     pub(crate) fn mro(&self) -> &[HeapId] {
         &self.mro
