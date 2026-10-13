@@ -86,12 +86,7 @@ impl Class {
     }
 
     /// Searches the class namespace and base classes in C3 MRO order, cloning the result.
-    pub(crate) fn mro_getattr(
-        &self,
-        attr_str: &str,
-        heap: &Heap,
-        interns: &Interns,
-    ) -> Option<Value> {
+    pub(crate) fn mro_getattr(&self, attr_str: &str, heap: &Heap, interns: &Interns) -> Option<Value> {
         self.mro_getattr_ref(attr_str, heap, interns)
             .map(|v| v.clone_with_heap(heap))
     }

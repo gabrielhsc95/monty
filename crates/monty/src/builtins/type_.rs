@@ -127,9 +127,17 @@ fn create_class(
     };
 
     let mut bases_ids = Vec::with_capacity(tuple.as_slice().len());
+    let mut base_names = Vec::with_capacity(tuple.as_slice().len());
+    let mut seen_object = false;
     for base in tuple.as_slice() {
         match base {
-            Value::Builtin(Builtins::Type(Type::Object)) => {}
+            Value::Builtin(Builtins::Type(Type::Object)) => {
+                if seen_object {
+                    return Err(ExcType::type_error("duplicate base class object"));
+                }
+                seen_object = true;
+                base_names.push("object");
+            }
             Value::Builtin(Builtins::Type(ty)) => {
                 let type_name = ty.name(vm.heap, vm.interns);
                 return Err(ExcType::type_error(format!(
@@ -137,7 +145,15 @@ fn create_class(
                 )));
             }
             Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => {
+                let HeapData::Class(cls) = vm.heap.get(*id) else {
+                    unreachable!()
+                };
+                let cls_name = cls.name().as_str(vm.interns);
+                if bases_ids.contains(id) {
+                    return Err(ExcType::type_error(format!("duplicate base class {cls_name}")));
+                }
                 bases_ids.push(*id);
+                base_names.push(cls_name);
             }
             _ => {
                 let got = base.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -148,7 +164,7 @@ fn create_class(
         }
     }
 
-    let mro = compute_c3_mro(&bases_ids, vm.heap)?;
+    let mro = compute_c3_mro(&bases_ids, &base_names, vm.heap)?;
 
     let Value::Ref(ns_id) = namespace else {
         let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -207,7 +223,7 @@ fn create_class(
 }
 
 /// Computes Python's C3 method resolution order for the given base classes.
-fn compute_c3_mro(bases: &[HeapId], heap: &Heap) -> RunResult<Vec<HeapId>> {
+fn compute_c3_mro(bases: &[HeapId], base_names: &[&str], heap: &Heap) -> RunResult<Vec<HeapId>> {
     let mut sequences: Vec<Vec<HeapId>> = Vec::with_capacity(bases.len() + 1);
     for &base_id in bases {
         let HeapData::Class(base_cls) = heap.get(base_id) else {
@@ -240,9 +256,10 @@ fn compute_c3_mro(bases: &[HeapId], heap: &Heap) -> RunResult<Vec<HeapId>> {
         }
 
         let Some(selected) = candidate else {
-            return Err(ExcType::type_error(
-                "Cannot create a consistent method resolution order (MRO) for bases",
-            ));
+            return Err(ExcType::type_error(format!(
+                "Cannot create a consistent method resolution order (MRO) for bases {}",
+                base_names.join(", ")
+            )));
         };
 
         result.push(selected);

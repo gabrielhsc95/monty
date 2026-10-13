@@ -96,4 +96,37 @@ assert obj.extra == "data"
 assert isinstance(obj, Input)
 assert isinstance(obj, MockBaseModel)
 
+# Test duplicate base rejection
+class DupBase:
+    pass
+
+try:
+    class DupSub(DupBase, DupBase):
+        pass
+    assert False, "expected duplicate base TypeError"
+except TypeError as e:
+    assert str(e) == "duplicate base class DupBase"
+
+try:
+    class DupObjSub(object, object):
+        pass
+    assert False, "expected duplicate object base TypeError"
+except TypeError as e:
+    assert str(e) == "duplicate base class object"
+
+# Test MRO conflict error message with base class names
+class MroX:
+    pass
+
+class MroY(MroX):
+    pass
+
+try:
+    class MroConflict(MroX, MroY):
+        pass
+    assert False, "expected MRO conflict TypeError"
+except TypeError as e:
+    assert str(e) == "Cannot create a consistent method resolution order (MRO) for bases MroX, MroY"
+
 print("success")
+
