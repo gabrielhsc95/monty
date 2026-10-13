@@ -722,7 +722,7 @@ pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>
 /// — want this rather than either check.
 pub(crate) fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
     match vm.heap.get(class_id) {
-        HeapData::Class(class) => class.namespace().get_by_str(dunder, vm.heap, vm.interns),
+        HeapData::Class(class) => class.mro_getattr_ref(dunder, vm.heap, vm.interns),
         _ => None,
     }
 }
@@ -798,10 +798,7 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
 /// Looks up a member in a class namespace and clones it out, or `None` if absent.
 fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
     match vm.heap.get(class_id) {
-        HeapData::Class(class) => class
-            .namespace()
-            .get_by_str(name, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap)),
+        HeapData::Class(class) => class.mro_getattr(name, vm.heap, vm.interns),
         _ => None,
     }
 }

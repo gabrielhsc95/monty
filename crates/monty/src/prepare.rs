@@ -867,12 +867,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
                 Node::ClassDef {
                     name,
+                    bases,
                     body,
                     members,
                     decorators,
                     position,
                 } => {
-                    new_nodes.push(self.prepare_class_def(name, body, members, decorators, position)?);
+                    new_nodes.push(self.prepare_class_def(name, bases, body, members, decorators, position)?);
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -1757,6 +1758,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     fn prepare_class_def(
         &mut self,
         name: Identifier,
+        bases: Vec<ExprLoc>,
         body: RawFunctionDef,
         members: Vec<Identifier>,
         decorators: Vec<ExprLoc>,
@@ -1765,6 +1767,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // The class name binds in the enclosing scope, exactly like a `def`.
         self.names_assigned_in_order.insert(name.name_id);
         let name = self.get_id(name)?;
+
+        let bases = bases
+            .into_iter()
+            .map(|b| self.prepare_expression(b))
+            .collect::<Result<Vec<_>, ParseError>>()?;
 
         // Decorators evaluate in the enclosing scope, not the class body.
         let decorators = decorators
@@ -1894,6 +1901,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         Ok(Node::ClassDef {
             name,
+            bases,
             body: body_def,
             members,
             decorators,

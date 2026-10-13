@@ -72,9 +72,22 @@ fn instance_of_host_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
     matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::HostClass(hc) if hc.class_id() == class_id))
 }
 
-/// Whether `obj` is an instance whose class object is `class_id`.
+/// Whether `obj` is an instance whose class object is `class_id` or a subclass of it.
 fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
-    matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::Instance(inst) if inst.class() == class_id))
+    let Value::Ref(obj_id) = obj else {
+        return false;
+    };
+    let HeapData::Instance(inst) = vm.heap.get(*obj_id) else {
+        return false;
+    };
+    if inst.class() == class_id {
+        return true;
+    }
+    if let HeapData::Class(cls) = vm.heap.get(inst.class()) {
+        cls.is_subclass_of(class_id)
+    } else {
+        false
+    }
 }
 
 /// Whether `obj` is a namedtuple instance built from the class `class_id`.
