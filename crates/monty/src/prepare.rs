@@ -873,7 +873,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     decorators,
                     position,
                 } => {
-                    new_nodes.push(self.prepare_class_def(name, bases, body, members, decorators, position)?);
+                    let name_id = name.name_id;
+                    let prepared = self.prepare_class_def(name, bases, body, members, decorators, position)?;
+                    if self.is_class_scope {
+                        self.bound_class_members.insert(name_id);
+                    }
+                    new_nodes.push(prepared);
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -1758,7 +1763,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     fn prepare_class_def(
         &mut self,
         name: Identifier,
-        bases: Vec<ExprLoc>,
+        bases: Vec<SequenceItem>,
         body: RawFunctionDef,
         members: Vec<Identifier>,
         decorators: Vec<ExprLoc>,
@@ -1770,7 +1775,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         let bases = bases
             .into_iter()
-            .map(|b| self.prepare_expression(b))
+            .map(|item| match item {
+                SequenceItem::Value(e) => Ok(SequenceItem::Value(self.prepare_expression(e)?)),
+                SequenceItem::Unpack(e) => Ok(SequenceItem::Unpack(self.prepare_expression(e)?)),
+            })
             .collect::<Result<Vec<_>, ParseError>>()?;
 
         // Decorators evaluate in the enclosing scope, not the class body.

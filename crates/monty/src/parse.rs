@@ -884,7 +884,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
 
             for base_expr in &arguments.args {
-                bases.push(self.parse_expression(base_expr.clone())?);
+                bases.push(self.parse_sequence_item(base_expr.clone())?);
             }
         }
 

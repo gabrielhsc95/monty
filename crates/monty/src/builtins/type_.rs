@@ -174,8 +174,11 @@ fn create_class(
         }
     }
 
-    if let Some(idx) = base_names.iter().position(|&n| n == "object")
-        && idx < base_names.len() - 1
+    if let Some(idx) = tuple
+        .as_slice()
+        .iter()
+        .position(|base| matches!(base, Value::Builtin(Builtins::Type(Type::Object))))
+        && idx < tuple.as_slice().len() - 1
     {
         return Err(ExcType::type_error(format!(
             "Cannot create a consistent method resolution order (MRO) for bases {}",
@@ -266,10 +269,12 @@ fn compute_c3_mro(bases: &[HeapId], base_names: &[&str], heap: &Heap) -> RunResu
         'outer: for seq in &sequences {
             let head = seq[0];
             for other_seq in &sequences {
-                step = step.wrapping_add(1);
-                heap.tracker.check_time_every(step)?;
-                if other_seq[1..].contains(&head) {
-                    continue 'outer;
+                for &tail_elem in &other_seq[1..] {
+                    step = step.wrapping_add(1);
+                    heap.tracker.check_time_every(step)?;
+                    if tail_elem == head {
+                        continue 'outer;
+                    }
                 }
             }
             candidate = Some(head);

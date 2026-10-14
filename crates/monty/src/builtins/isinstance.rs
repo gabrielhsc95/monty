@@ -80,13 +80,8 @@ fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
     let HeapData::Instance(inst) = vm.heap.get(*obj_id) else {
         return false;
     };
-    if inst.class() == class_id {
-        return true;
-    }
-    let HeapData::Class(cls) = vm.heap.get(inst.class()) else {
-        return false;
-    };
-    cls.is_subclass_of(class_id)
+    inst.class() == class_id
+        || matches!(vm.heap.get(inst.class()), HeapData::Class(cls) if cls.is_subclass_of(class_id))
 }
 
 /// Whether `obj` is a namedtuple instance built from the class `class_id`.

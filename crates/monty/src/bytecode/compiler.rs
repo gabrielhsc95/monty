@@ -967,7 +967,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_class_def(
         &mut self,
         name: &Identifier,
-        bases: &[ExprLoc],
+        bases: &[SequenceItem],
         body: &PreparedFunctionDef,
         members: &[Identifier],
         decorators: &[ExprLoc],
@@ -984,11 +984,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
 
         // Evaluate bases in the enclosing scope in source order
-        for base in bases {
-            self.compile_expr(base)?;
-        }
-        let bases_count = check_collection_size_u16(bases.len(), position)?;
-        self.code.emit_u16(Opcode::BuildTuple, bases_count)?;
+        self.compile_tuple_sequence(bases, position)?;
 
         // Build the class-body function/closure value on the stack...
         self.emit_make_class_body(body, members, position)?;
@@ -1032,6 +1028,40 @@ impl<'a, 'i> Compiler<'a, 'i> {
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(&body.body, members, position, interns, namespace_size, flags)
         })
+    }
+
+    /// Compiles a sequence of elements into a tuple on top of the stack,
+    /// supporting `*unpack` elements via PEP 448 list conversion.
+    fn compile_tuple_sequence(&mut self, elements: &[SequenceItem], position: CodeRange) -> Result<(), CompileError> {
+        if has_unpack_seq(elements) {
+            // Generalized path: build via list then convert for PEP 448 *unpacks
+            self.code.emit_u16(Opcode::BuildList, 0)?;
+            for item in elements {
+                match item {
+                    SequenceItem::Value(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit_u8(Opcode::ListAppend, 0)?;
+                    }
+                    SequenceItem::Unpack(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit(Opcode::ListExtend)?;
+                    }
+                }
+            }
+            self.code.emit(Opcode::ListToTuple)?;
+        } else {
+            // Fast path: all values, single BuildTuple.
+            // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
+            for item in elements {
+                let SequenceItem::Value(e) = item else {
+                    unreachable!("tuple fast path: only Value items")
+                };
+                self.compile_expr(e)?;
+            }
+            let count = check_collection_size_u16(elements.len(), position)?;
+            self.code.emit_u16(Opcode::BuildTuple, count)?;
+        }
+        Ok(())
     }
 
     /// Compiles a class body, mirroring
@@ -1220,34 +1250,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Tuple(elements) => {
-                if has_unpack_seq(elements) {
-                    // Generalized path: build via list then convert for PEP 448 *unpacks
-                    self.code.emit_u16(Opcode::BuildList, 0)?;
-                    for item in elements {
-                        match item {
-                            SequenceItem::Value(e) => {
-                                self.compile_expr(e)?;
-                                self.code.emit_u8(Opcode::ListAppend, 0)?;
-                            }
-                            SequenceItem::Unpack(e) => {
-                                self.compile_expr(e)?;
-                                self.code.emit(Opcode::ListExtend)?;
-                            }
-                        }
-                    }
-                    self.code.emit(Opcode::ListToTuple)?;
-                } else {
-                    // Fast path: all values, single BuildTuple.
-                    // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
-                    for item in elements {
-                        let SequenceItem::Value(e) = item else {
-                            unreachable!("tuple fast path: only Value items")
-                        };
-                        self.compile_expr(e)?;
-                    }
-                    let count = check_collection_size_u16(elements.len(), expr_loc.position)?;
-                    self.code.emit_u16(Opcode::BuildTuple, count)?;
-                }
+                self.compile_tuple_sequence(elements, expr_loc.position)?;
             }
 
             Expr::Dict(dict_items) => {

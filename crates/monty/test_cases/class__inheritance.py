@@ -277,4 +277,78 @@ assert not isinstance(c, UnrelatedClass)
 assert not isinstance(123, Parent)
 assert not isinstance([1, 2], Parent)
 
+
+# Test user-defined class named 'object' is not treated as builtin object
+def test_user_class_named_object():
+    class object:
+        custom = True
+
+    class SubCustomObj(object, ObjA):
+        pass
+
+    assert SubCustomObj.custom is True
+    assert SubCustomObj.x == 1 if hasattr(SubCustomObj, 'x') else True
+
+
+test_user_class_named_object()
+
+
+# Test nested class inheriting from enclosing sibling in function body
+def test_nested_classes():
+    class SiblingBase:
+        flag = 'from_sibling'
+
+    class SiblingChild(SiblingBase):
+        pass
+
+    assert SiblingChild.flag == 'from_sibling'
+    assert isinstance(SiblingChild(), SiblingBase)
+
+
+test_nested_classes()
+
+
+# Test frozen dataclass subclass computes field-wise hash
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FrozenBase:
+    pass
+
+
+@dataclass(frozen=True)
+class FrozenChild(FrozenBase):
+    y: int
+
+
+fc1 = FrozenChild(1)
+fc2 = FrozenChild(1)
+fc3 = FrozenChild(2)
+assert hash(fc1) == hash(fc2)
+assert hash(fc1) != hash(fc3)
+
+
+# Test starred unpacking in class bases
+class StarBaseA:
+    val_a = 'a'
+
+
+class StarBaseB:
+    val_b = 'b'
+
+
+star_bases = (StarBaseA, StarBaseB)
+
+
+class StarChild(*star_bases):  # type: ignore[reportUntypedBaseClass]
+    pass
+
+
+assert StarChild.val_a == 'a'
+assert StarChild.val_b == 'b'
+assert isinstance(StarChild(), StarBaseA)
+assert isinstance(StarChild(), StarBaseB)
+
+
 print('success')

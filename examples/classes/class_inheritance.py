@@ -1,7 +1,8 @@
 """Class inheritance inside Monty: single and multiple inheritance with C3 MRO.
 
-Sandbox code can define class hierarchies. Instances returned to the host
-are read-only `MontyClassProxy` snapshots with attributes resolved through MRO.
+Sandbox code can define class hierarchies with attribute resolution through MRO.
+Instances returned to the host are read-only `MontyClassProxy` snapshots of the
+instance state.
 """
 
 from pydantic_monty import Monty, MontyClassProxy
