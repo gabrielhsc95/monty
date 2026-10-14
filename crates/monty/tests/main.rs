@@ -398,6 +398,25 @@ fn dynamic_type_with_builtin_exception_base_raises_type_error() {
 }
 
 #[test]
+fn dynamic_type_with_non_type_base_raises_type_error() {
+    let code = "type('A', (1,), {})";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (1,), {})\n    ~~~~~~~~~~~~~~~~~~~\nTypeError: type.__new__(X): int is not a type object"
+    );
+
+    let code = "type('A', ([],), {})";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', ([],), {})\n    ~~~~~~~~~~~~~~~~~~~~\nTypeError: type.__new__(X): list is not a type object"
+    );
+}
+
+#[test]
 fn dynamic_type_with_user_class_base_succeeds() {
     let code = "A = type('A', (), {'x': 1})\nB = type('B', (A,), {'y': 2})\nb = B()\nassert b.x == 1\nassert b.y == 2";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();

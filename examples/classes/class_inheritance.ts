@@ -7,6 +7,9 @@ import assert from 'node:assert/strict'
 import { Monty, MontyClassProxy } from '@pydantic/monty'
 
 const code = `\
+class Tagged:
+    tag = 'v1'
+
 class Base:
     greeting = 'Hello'
 
@@ -14,13 +17,16 @@ class Base:
         self.name = name
 
     def message(self) -> str:
-        return f'{self.greeting}, {self.name}!'
+        return f'{self.greeting}, {self.name}! [{self.tag}]'
 
-class Sub(Base):
+class Sub(Base, Tagged):
     greeting = 'Welcome'
 
 s = Sub('World')
-assert s.message() == 'Welcome, World!'
+assert s.message() == 'Welcome, World! [v1]'
+assert isinstance(s, Sub)
+assert isinstance(s, Base)
+assert isinstance(s, Tagged)
 s
 `
 

@@ -2,11 +2,14 @@
 class Grandparent:
     x = 1
 
+
 class Parent(Grandparent):
     y = 2
 
+
 class Child(Parent):
     z = 3
+
 
 c = Child()
 assert c.x == 1
@@ -16,54 +19,66 @@ assert isinstance(c, Child)
 assert isinstance(c, Parent)
 assert isinstance(c, Grandparent)
 
+
 # Test multiple inheritance (Left-to-right C3 resolution)
 class A:
-    name = "A"
-    shared = "from A"
+    name = 'A'
+    shared = 'from A'
+
 
 class B:
-    name = "B"
-    shared = "from B"
-    b_only = "only B"
+    name = 'B'
+    shared = 'from B'
+    b_only = 'only B'
+
 
 class C(A, B):
-    name = "C"
+    name = 'C'
+
 
 obj = C()
-assert obj.name == "C"       # From C
-assert obj.shared == "from A" # Left-most base class wins
-assert obj.b_only == "only B" # Found in B
+assert obj.name == 'C'  # From C
+assert obj.shared == 'from A'  # Left-most base class wins
+assert obj.b_only == 'only B'  # Found in B
 assert isinstance(obj, C)
 assert isinstance(obj, A)
 assert isinstance(obj, B)
 
+
 # Test diamond inheritance with C3 MRO
 class DiamondBase:
-    val = "root"
+    val = 'root'
+
 
 class DiamondLeft(DiamondBase):
     pass
 
+
 class DiamondRight(DiamondBase):
-    val = "right"
+    val = 'right'
+
 
 class DiamondBottom(DiamondLeft, DiamondRight):
     pass
 
+
 d = DiamondBottom()
-assert d.val == "right"
+assert d.val == 'right'
 assert isinstance(d, DiamondBottom)
 assert isinstance(d, DiamondLeft)
 assert isinstance(d, DiamondRight)
 assert isinstance(d, DiamondBase)
 
+
 # Test inheriting explicitly from object
 class WithObject(object):
-    greeting = "hi"
+    greeting = 'hi'
+
 
 wo = WithObject()
-assert wo.greeting == "hi"
+assert wo.greeting == 'hi'
 assert isinstance(wo, WithObject)
+
 
 # Test inheritance inside an enclosing function scope
 def make_child():
@@ -75,9 +90,11 @@ def make_child():
 
     return LocalChild()
 
+
 lc = make_child()
 assert lc.x == 42
 assert lc.y == 100
+
 
 # Test the mock BaseModel pattern
 class MockBaseModel:
@@ -85,50 +102,64 @@ class MockBaseModel:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+
 class Input(MockBaseModel):
     limit = 20
 
-payload = {"limit": 50, "extra": "data"}
+
+payload = {'limit': 50, 'extra': 'data'}
 obj = Input(**payload)
 
 assert obj.limit == 50
-assert obj.extra == "data"
+assert obj.extra == 'data'
 assert isinstance(obj, Input)
 assert isinstance(obj, MockBaseModel)
+
 
 # Test duplicate base rejection
 class DupBase:
     pass
 
-try:
-    class DupSub(DupBase, DupBase):
-        pass
-    assert False, "expected duplicate base TypeError"
-except TypeError as e:
-    assert str(e) == "duplicate base class DupBase"
 
 try:
+
+    class DupSub(DupBase, DupBase):
+        pass
+
+    assert False, 'expected duplicate base TypeError'
+except TypeError as e:
+    assert str(e) == 'duplicate base class DupBase'
+
+try:
+
     class DupObjSub(object, object):
         pass
-    assert False, "expected duplicate object base TypeError"
+
+    assert False, 'expected duplicate object base TypeError'
 except TypeError as e:
-    assert str(e) == "duplicate base class object"
+    assert str(e) == 'duplicate base class object'
+
 
 # Test MRO conflict error message with base class names
 class MroX:
     pass
 
+
 class MroY(MroX):
     pass
 
+
 try:
+
     class MroConflict(MroX, MroY):
         pass
-    assert False, "expected MRO conflict TypeError"
+
+    assert False, 'expected MRO conflict TypeError'
 except TypeError as e:
-    assert str(e) == "Cannot create a consistent method resolution order (MRO) for bases MroX, MroY"
+    assert str(e) == 'Cannot create a consistent method resolution order (MRO) for bases MroX, MroY'
 
 # === Special "dunder" method inheritance ===
+
 
 class ContainerBase:
     def __init__(self, data):
@@ -170,6 +201,7 @@ for x in c3:
 assert items == [4, 5]
 assert not c1.is_empty()
 
+
 # Test object ordering in bases
 class ObjBase:
     pass
@@ -182,12 +214,14 @@ class ValidObjSub(ObjBase, object):
 assert isinstance(ValidObjSub(), ObjBase)
 
 try:
+
     class InvalidObjSub(object, ObjBase):
         pass
 
-    assert False, "expected MRO conflict with object first"
+    assert False, 'expected MRO conflict with object first'
 except TypeError as e:
-    assert str(e) == "Cannot create a consistent method resolution order (MRO) for bases object, ObjBase"
+    assert str(e) == 'Cannot create a consistent method resolution order (MRO) for bases object, ObjBase'
+
 
 class ObjA:
     pass
@@ -198,13 +232,49 @@ class ObjB:
 
 
 try:
+
     class InvalidMidObjSub(ObjA, object, ObjB):
         pass
 
-    assert False, "expected MRO conflict with object in middle"
+    assert False, 'expected MRO conflict with object in middle'
 except TypeError as e:
-    assert str(e) == "Cannot create a consistent method resolution order (MRO) for bases object, ObjB"
-
-print("success")
+    assert str(e) == 'Cannot create a consistent method resolution order (MRO) for bases object, ObjB'
 
 
+# Test class decorators with inheritance
+def add_custom_attr(cls):
+    cls.custom_attr = 'decorated'
+    return cls
+
+
+@add_custom_attr
+class DecoratedSub(Parent):
+    pass
+
+
+assert DecoratedSub.custom_attr == 'decorated'
+assert DecoratedSub.y == 2
+
+
+# Test dynamic base expression evaluated at runtime
+def choose_base():
+    return Grandparent
+
+
+class DynamicSub(choose_base()):
+    pass
+
+
+assert DynamicSub.x == 1
+
+
+# Test negative isinstance checks
+class UnrelatedClass:
+    pass
+
+
+assert not isinstance(c, UnrelatedClass)
+assert not isinstance(123, Parent)
+assert not isinstance([1, 2], Parent)
+
+print('success')

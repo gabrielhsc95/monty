@@ -20,4 +20,3 @@ def test_cycle():
 
 test_cycle()
 # ref-counts={'Foo': 3, 'f': 2, 'g': 1, 'bm': 1}
-

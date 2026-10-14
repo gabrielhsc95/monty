@@ -150,16 +150,20 @@ fn create_class(
                     "type '{type_name}' is not an acceptable base type"
                 )));
             }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => {
-                let HeapData::Class(cls) = vm.heap.get(*id) else {
-                    unreachable!()
-                };
-                let cls_name = cls.name().as_str(vm.interns);
-                if bases_ids.contains(id) {
-                    return Err(ExcType::type_error(format!("duplicate base class {cls_name}")));
+            Value::Ref(id) => {
+                if let HeapData::Class(cls) = vm.heap.get(*id) {
+                    let cls_name = cls.name().as_str(vm.interns);
+                    if bases_ids.contains(id) {
+                        return Err(ExcType::type_error(format!("duplicate base class {cls_name}")));
+                    }
+                    bases_ids.push(*id);
+                    base_names.push(cls_name);
+                } else {
+                    let got = base.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+                    return Err(ExcType::type_error(format!(
+                        "type.__new__(X): {got} is not a type object"
+                    )));
                 }
-                bases_ids.push(*id);
-                base_names.push(cls_name);
             }
             _ => {
                 let got = base.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -241,17 +245,17 @@ fn create_class(
 fn compute_c3_mro(bases: &[HeapId], base_names: &[&str], heap: &Heap) -> RunResult<Vec<HeapId>> {
     let mut sequences: Vec<Vec<HeapId>> = Vec::with_capacity(bases.len() + 1);
     for &base_id in bases {
-        let HeapData::Class(base_cls) = heap.get(base_id) else {
-            unreachable!("all bases are verified to be Class");
-        };
-        let mut seq = Vec::with_capacity(1 + base_cls.mro().len());
-        seq.push(base_id);
-        seq.extend_from_slice(base_cls.mro());
-        sequences.push(seq);
+        if let HeapData::Class(base_cls) = heap.get(base_id) {
+            let mut seq = Vec::with_capacity(1 + base_cls.mro().len());
+            seq.push(base_id);
+            seq.extend_from_slice(base_cls.mro());
+            sequences.push(seq);
+        }
     }
     sequences.push(bases.to_vec());
 
     let mut result = Vec::new();
+    let mut step: usize = 0;
     loop {
         sequences.retain(|seq| !seq.is_empty());
         if sequences.is_empty() {
@@ -262,6 +266,8 @@ fn compute_c3_mro(bases: &[HeapId], base_names: &[&str], heap: &Heap) -> RunResu
         'outer: for seq in &sequences {
             let head = seq[0];
             for other_seq in &sequences {
+                step = step.wrapping_add(1);
+                heap.tracker.check_time_every(step)?;
                 if other_seq[1..].contains(&head) {
                     continue 'outer;
                 }
