@@ -1051,12 +1051,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.emit(Opcode::ListToTuple)?;
         } else {
             // Fast path: all values, single BuildTuple.
-            // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
             for item in elements {
-                let SequenceItem::Value(e) = item else {
-                    unreachable!("tuple fast path: only Value items")
-                };
-                self.compile_expr(e)?;
+                if let SequenceItem::Value(e) = item {
+                    self.compile_expr(e)?;
+                }
             }
             let count = check_collection_size_u16(elements.len(), position)?;
             self.code.emit_u16(Opcode::BuildTuple, count)?;
