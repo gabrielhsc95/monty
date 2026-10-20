@@ -674,6 +674,12 @@ pub enum StaticStrings {
     Binascii,
     /// `random.binomialvariate()` function.
     Binomialvariate,
+    /// `bisect` in the bisect module.
+    Bisect,
+    /// `bisect_left` in the bisect module.
+    BisectLeft,
+    /// `bisect_right` in the bisect module.
+    BisectRight,
     /// `hashlib.blake2b` type and hash name.
     Blake2b,
     /// `hashlib.blake2s` type and hash name.
@@ -788,6 +794,8 @@ pub enum StaticStrings {
     /// `binascii.crc_hqx()` function.
     #[strum(serialize = "crc_hqx")]
     CrcHqx,
+    /// Module name for `import csv`.
+    Csv,
     /// `time.ctime()` function.
     Ctime,
     /// `cum_weights` parameter of `random.choices()`.
@@ -851,6 +859,8 @@ pub enum StaticStrings {
     Degrees,
     /// `delay` parameter of `asyncio.sleep()`.
     Delay,
+    /// `delimiter` dialect attribute and `csv` format parameter.
+    Delimiter,
     /// `depth` parameter of `hashlib.blake2b()`.
     Depth,
     /// The `collections.deque` type.
@@ -862,9 +872,20 @@ pub enum StaticStrings {
     DevNullString,
     /// `os.devnull` constant name.
     Devnull,
+    /// `dialect` parameter and attribute of the `csv` readers and writers.
+    Dialect,
+    /// `csv.Dialect`, the `_csv.Dialect` class.
+    #[strum(serialize = "Dialect")]
+    DialectClass,
+    /// `csv.DictReader` class.
+    #[strum(serialize = "DictReader")]
+    DictReader,
     /// `typing.Dict` marker.
     #[strum(serialize = "Dict")]
     DictType,
+    /// `csv.DictWriter` class.
+    #[strum(serialize = "DictWriter")]
+    DictWriter,
     /// `set.difference()` method.
     Difference,
     /// `sys.float_info.dig` field.
@@ -892,12 +913,16 @@ pub enum StaticStrings {
     /// `re.DOTALL` flag
     #[strum(serialize = "DOTALL")]
     DotallFlag,
+    /// `doublequote` dialect attribute and `csv` format parameter.
+    Doublequote,
     /// `itertools.dropwhile()` function.
     Dropwhile,
     /// Kwarg name `dst` — `os.rename(dst=...)`, `os.replace(dst=...)`.
     Dst,
     /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
     DstDirFd,
+    /// `json.dump()` function.
+    Dump,
     /// `json.dumps()` function.
     Dumps,
     /// `__args__` of a `types.GenericAlias`.
@@ -976,6 +1001,12 @@ pub enum StaticStrings {
     Errors,
     /// `re.escape()` function
     Escape,
+    /// `escapechar` dialect attribute and `csv` format parameter.
+    Escapechar,
+    /// `csv.excel` dialect.
+    Excel,
+    /// `csv.excel_tab` dialect.
+    ExcelTab,
     /// `sys.exec_prefix` attribute.
     ExecPrefix,
     /// `sys.executable` attribute.
@@ -1005,6 +1036,8 @@ pub enum StaticStrings {
     Extend,
     /// `deque.extendleft()` method.
     Extendleft,
+    /// `extrasaction` parameter and attribute of `csv.DictWriter`.
+    Extrasaction,
     /// `os.extsep` constant name.
     Extsep,
     /// Kwarg name `f1` — `os.path.samefile(f1=...)`.
@@ -1025,6 +1058,10 @@ pub enum StaticStrings {
     /// `namedtuple(field_names=...)` keyword argument.
     #[strum(serialize = "field_names")]
     FieldNames,
+    /// `fieldnames` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
+    Fieldnames,
+    /// `csv.field_size_limit()` function.
+    FieldSizeLimit,
     /// Kwarg name `file` — `open(file=...)`.
     File,
     /// Kwarg name `filename` — `os.path.getsize(filename=...)`, `os.path.realpath(filename=...)`.
@@ -1060,6 +1097,8 @@ pub enum StaticStrings {
     Fmod,
     /// `datetime` / `time` `fold` attribute and constructor kwarg.
     Fold,
+    /// `fp` parameter of `json.load()` / `json.dump()`.
+    Fp,
     /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "foldspaces")]
     Foldspaces,
@@ -1121,6 +1160,8 @@ pub enum StaticStrings {
     Generic,
     /// `dict.get()` method.
     Get,
+    /// `csv.get_dialect()` function.
+    GetDialect,
     /// `os.path.getatime()` function.
     Getatime,
     /// `os.path.getctime()` function.
@@ -1179,6 +1220,8 @@ pub enum StaticStrings {
     Hexstr,
     /// `sys.hexversion` attribute.
     Hexversion,
+    /// `hi` in the bisect module.
+    Hi,
     /// `high` parameter of `random.triangular()`.
     High,
     /// `datetime` / `time` `hour` attribute and constructor kwarg.
@@ -1213,6 +1256,12 @@ pub enum StaticStrings {
     InnerSize,
     /// `list.insert()` method.
     Insert,
+    /// `insort` in the bisect module.
+    Insort,
+    /// `insort_left` in the bisect module.
+    InsortLeft,
+    /// `insort_right` in the bisect module.
+    InsortRight,
     /// `sys.flags.inspect` field.
     Inspect,
     /// `sys.flags.int_max_str_digits` field.
@@ -1359,8 +1408,14 @@ pub enum StaticStrings {
     Lgamma,
     /// The value of `sys.platlibdir`.
     Lib,
+    /// `line_num` attribute of the `csv` readers.
+    LineNum,
     /// `os.linesep` constant name.
     Linesep,
+    /// `csv.list_dialects()` function.
+    ListDialects,
+    /// `lineterminator` dialect attribute and `csv` format parameter.
+    Lineterminator,
     /// `typing.List` marker.
     #[strum(serialize = "List")]
     ListType,
@@ -1373,7 +1428,11 @@ pub enum StaticStrings {
     Little,
     /// `ljust()` method, shared by `str` and `bytes`.
     Ljust,
-    /// `json.loads()` function.
+    /// `lo` in the bisect module.
+    Lo,
+    /// `json.load()` and `tomllib.load()` functions.
+    Load,
+    /// `json.loads()` and `tomllib.loads()` functions.
     Loads,
     /// `locals` parameter of eval/exec.
     Locals,
@@ -1413,6 +1472,9 @@ pub enum StaticStrings {
     Match,
     /// `@dataclass(match_args=...)`.
     MatchArgs,
+    /// The `__match_args__` class attribute class patterns read and `@dataclass` writes.
+    #[strum(serialize = "__match_args__")]
+    MatchArgsDunder,
     /// `re.Match`
     #[strum(serialize = "Match")]
     MatchClass,
@@ -1482,6 +1544,8 @@ pub enum StaticStrings {
     /// `None` is a legitimate default.
     #[strum(serialize = "MISSING")]
     Missing,
+    /// Path.unlink missing-file option.
+    MissingOk,
     /// `Path.mkdir()` and `os.mkdir()` — yields a host call.
     Mkdir,
     /// `time.mktime()` function.
@@ -1529,6 +1593,8 @@ pub enum StaticStrings {
     Never,
     /// Kwarg name `new` — `str.replace(new=...)`, `bytes.replace(new=...)`.
     New,
+    /// `new_limit` parameter of `csv.field_size_limit()`.
+    NewLimit,
     /// Kwarg name `newline` — `open(newline=...)`.
     Newline,
     /// `math.nextafter()` function.
@@ -1703,13 +1769,37 @@ pub enum StaticStrings {
     PycachePrefix,
     /// `sys.flags.quiet` field.
     Quiet,
+    /// `csv.QUOTE_ALL` constant.
+    #[strum(serialize = "QUOTE_ALL")]
+    QuoteAll,
+    /// `csv.QUOTE_MINIMAL` constant.
+    #[strum(serialize = "QUOTE_MINIMAL")]
+    QuoteMinimal,
+    /// `csv.QUOTE_NONE` constant.
+    #[strum(serialize = "QUOTE_NONE")]
+    QuoteNone,
+    /// `csv.QUOTE_NONNUMERIC` constant.
+    #[strum(serialize = "QUOTE_NONNUMERIC")]
+    QuoteNonnumeric,
+    /// `csv.QUOTE_NOTNULL` constant.
+    #[strum(serialize = "QUOTE_NOTNULL")]
+    QuoteNotnull,
+    /// `csv.QUOTE_STRINGS` constant.
+    #[strum(serialize = "QUOTE_STRINGS")]
+    QuoteStrings,
+    /// `quotechar` dialect attribute and `csv` format parameter.
+    Quotechar,
     /// `quotetabs` parameter of `binascii.b2a_qp()`.
     #[strum(serialize = "quotetabs")]
     Quotetabs,
+    /// `quoting` dialect attribute and `csv` format parameter.
+    Quoting,
     /// `math.radians()` function.
     Radians,
     /// `sys.float_info.radix` field.
     Radix,
+    /// `extrasaction='raise'`, the `csv.DictWriter` default.
+    Raise,
     /// `random.randbytes()` function.
     Randbytes,
     /// `random.randint()` function.
@@ -1734,6 +1824,8 @@ pub enum StaticStrings {
     ReadText,
     /// `file.readable()` method.
     Readable,
+    /// `csv.reader()` function and `csv.DictReader.reader` attribute.
+    Reader,
     /// `file.readline()` method.
     Readline,
     /// `file.readlines()` method.
@@ -1774,6 +1866,10 @@ pub enum StaticStrings {
     Resolution,
     /// `Path.resolve()` method — yields a host call.
     Resolve,
+    /// `restkey` parameter and attribute of `csv.DictReader`.
+    Restkey,
+    /// `restval` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
+    Restval,
     /// `result` parameter of `asyncio.sleep()`.
     #[strum(serialize = "result")]
     ResultArg,
@@ -1899,6 +1995,8 @@ pub enum StaticStrings {
     Sinh,
     /// `size` parameter of `os.urandom()`.
     Size,
+    /// `skipinitialspace` dialect attribute and `csv` format parameter.
+    Skipinitialspace,
     /// `json.dumps(skipkeys=...)` keyword.
     Skipkeys,
     /// `time.sleep()` and `asyncio.sleep()`.
@@ -2029,6 +2127,8 @@ pub enum StaticStrings {
     Tan,
     /// `math.tanh()` function.
     Tanh,
+    /// Destination keyword for Path.rename and Path.replace.
+    Target,
     /// `math.tau` constant
     Tau,
     /// `itertools.tee()` function.
@@ -2087,6 +2187,11 @@ pub enum StaticStrings {
     TmZone,
     /// `date.today()` / `datetime.today()` classmethod.
     Today,
+    /// `tomllib.TOMLDecodeError` exception.
+    #[strum(serialize = "TOMLDecodeError")]
+    TomlDecodeError,
+    /// Module name for `import tomllib`.
+    Tomllib,
     /// Kwarg name `top` — `os.walk(top=...)`.
     Top,
     /// Kwarg name `top_down` — `Path.walk(top_down=...)`.
@@ -2159,6 +2264,8 @@ pub enum StaticStrings {
     /// `typing.Union` marker.
     #[strum(serialize = "Union")]
     UnionType,
+    /// `csv.unix_dialect` dialect.
+    UnixDialect,
     /// `Path.unlink()` and `os.unlink()` — yields a host call.
     Unlink,
     /// `@dataclass(unsafe_hash=...)`.
@@ -2228,6 +2335,14 @@ pub enum StaticStrings {
     WriteBytes,
     /// `Path.write_text()` method — yields a host call.
     WriteText,
+    /// `csv.DictWriter.writeheader()` method.
+    Writeheader,
+    /// `csv.writer()` function and `csv.DictWriter.writer` attribute.
+    Writer,
+    /// `writerow()` method of the `csv` writers.
+    Writerow,
+    /// `writerows()` method of the `csv` writers.
+    Writerows,
     /// `date` / `datetime` `year` attribute and constructor kwarg.
     Year,
     /// `base64.z85decode()` function.

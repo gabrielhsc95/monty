@@ -348,7 +348,7 @@ impl<'h> VM<'h> {
     /// override only need a single trait impl, not parallel `StaticStrings::Foo`
     /// arms in their `py_call_attr` body. New dunder methods plug into the
     /// dispatch table here without touching individual types.
-    fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
+    pub(crate) fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
         let this = self;
         let attr = EitherStr::Interned(name_id);
 
@@ -571,7 +571,7 @@ impl<'h> VM<'h> {
                 // Coupling check: reaching here means dispatch rejected the value,
                 // so `Value::is_callable` must agree it is not callable.
                 debug_assert!(
-                    !callable.is_callable(self.heap),
+                    !callable.is_callable(self),
                     "Value::is_callable accepts a value call_function rejects — the two drifted"
                 );
                 args.drop_with(self);

@@ -771,7 +771,12 @@ impl MontyTypeExt for MontyType {
             | Type::MissingType
             | Type::DirEntry
             | Type::ScandirIterator
-            | Type::WalkGenerator => return None,
+            | Type::WalkGenerator
+            | Type::CsvReader
+            | Type::CsvWriter
+            | Type::CsvDictReader
+            | Type::CsvDictWriter
+            | Type::CsvDialect => return None,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,
@@ -1095,7 +1100,7 @@ fn intern_host_class_type(
     match vm.heap.resolve_host_type(&type_id) {
         Some(class_id) => {
             vm.heap.inc_ref(class_id);
-            let HeapReadOutput::HostClassType(mut ty) = vm.heap.read(class_id) else {
+            let HeapReadOutput::HostClassType(ty) = vm.heap.read(class_id) else {
                 unreachable!("host_type_index points at a non-host-class-type entry");
             };
             let replaced = (!attrs.is_empty()).then_some(attrs);
