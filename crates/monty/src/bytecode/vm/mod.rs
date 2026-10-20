@@ -1774,13 +1774,7 @@ impl<'h> VM<'h> {
                     let (pos_count, kw_count) = self.current_frame.fetch_u8_u8();
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
-                    // Read keyword name StringIds
-                    let mut kwname_ids = Vec::with_capacity(kw_count);
-                    for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(self.current_frame.fetch_u16()));
-                    }
-
-                    handle_call_result!(self, self.exec_call_function_kw(pos_count, kwname_ids));
+                    handle_call_result!(self, self.exec_call_function_kw(pos_count, kw_count));
                 }
                 Opcode::CallAttr => {
                     // CallAttr: u16 name_id, u8 arg_count
@@ -1798,13 +1792,7 @@ impl<'h> VM<'h> {
                     let name_id = StringId::from_index(name_idx);
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
-                    // Read keyword name StringIds
-                    let mut kwname_ids = Vec::with_capacity(kw_count);
-                    for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(self.current_frame.fetch_u16()));
-                    }
-
-                    handle_call_result!(self, self.exec_call_attr_kw(name_id, pos_count, kwname_ids));
+                    handle_call_result!(self, self.exec_call_attr_kw(name_id, pos_count, kw_count));
                 }
                 Opcode::CallFunctionExtended => {
                     let flags = self.current_frame.fetch_u8();
