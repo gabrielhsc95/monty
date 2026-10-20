@@ -182,7 +182,8 @@ impl<'h> VM<'h> {
 
     /// Executes `CallFunctionKw` opcode.
     ///
-    /// Pops the callable, positional args, and keyword args from the stack,
+    /// Reads `kw_count` keyword name operands from the instruction stream,
+    /// pops the keyword values, positional args, and callable from the stack,
     /// builds the appropriate `ArgValues`, and calls the function.
     pub(super) fn exec_call_function_kw(&mut self, pos_count: usize, kw_count: usize) -> Result<CallResult, RunError> {
         // Pop keyword values (TOS is last kwarg value)
@@ -230,7 +231,8 @@ impl<'h> VM<'h> {
 
     /// Executes `CallAttrKw` opcode.
     ///
-    /// Pops the object, positional args, and keyword args from the stack,
+    /// Reads `kw_count` keyword name operands from the instruction stream,
+    /// pops the keyword values, positional args, and object from the stack,
     /// builds the appropriate `ArgValues`, and calls the attribute.
     /// Returns a `CallResult` which may indicate an OS or external call.
     pub(super) fn exec_call_attr_kw(
