@@ -157,6 +157,12 @@ impl<'h> HeapReadMut<'h, Instance> {
             [name, value].drop_with(vm);
             return Err(exc);
         }
+        if let Some(text) = name.as_either_str(vm.heap)
+            && text.as_str(vm.interns) == "__class__"
+        {
+            [name, value].drop_with(vm);
+            return Err(ExcType::type_error("__class__ assignment not supported"));
+        }
         self.set_attr_unchecked(name, value, vm)
     }
 
@@ -170,12 +176,6 @@ impl<'h> HeapReadMut<'h, Instance> {
     /// Whatever `set_attr` grows must stay above this line (see
     /// `limitations/classes.md`).
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if let Some(text) = name.as_either_str(vm.heap)
-            && matches!(text.as_str(vm.interns), "__class__" | "__bases__")
-        {
-            [name, value].drop_with(vm);
-            return Err(ExcType::type_error("type controls __class__ and __bases__"));
-        }
         self.attrs_mut().set(name, value, vm)
     }
 }
@@ -422,11 +422,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             if let HeapData::Class(cls) = vm.heap.get(class_id)
                 && cls.base_exception().is_some()
             {
+                if heap_ids.contains(&self_id) {
+                    write!(f, "{}(...)", class_name(class_id, vm.heap, vm.interns))?;
+                    return Ok(());
+                }
+                heap_ids.insert(self_id);
                 let mut guard = vm.recursion_guard()?;
                 let vm = &mut *guard;
                 let args = instance_attr(self_id, "args", vm).unwrap_or(Value::None);
                 defer_drop!(args, vm);
                 let Some(HeapReadOutput::Tuple(tuple)) = args.read_heap(vm) else {
+                    heap_ids.remove(&self_id);
                     return Err(ExcType::type_error("exception args must be a tuple"));
                 };
                 let items: Vec<_> = tuple
@@ -443,7 +449,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                     }
                     item.py_repr_fmt(f, vm, heap_ids)?;
                 }
-                return Ok(f.write_char(')')?);
+                f.write_char(')')?;
+                heap_ids.remove(&self_id);
+                return Ok(());
             }
             match dataclasses::dataclass_fields(class_id, vm) {
                 Some(field_names) => {

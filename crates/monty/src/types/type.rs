@@ -21,6 +21,7 @@ use crate::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
         Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
+        class::validate_init_subclass_args,
         complex, date, datetime,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
@@ -714,21 +715,7 @@ impl Type {
             }
             _ if vm.interns.get_str(method_id) == "__init_subclass__" => {
                 let type_name = self.name(vm.heap, vm.interns);
-                let (pos, kwargs) = args.into_parts();
-                let pos_len = pos.as_slice().len();
-                pos.drop_with(vm.heap);
-                let has_kwargs = !kwargs.is_empty();
-                kwargs.drop_with(vm.heap);
-                if pos_len > 0 {
-                    return Err(ExcType::type_error(format!(
-                        "{type_name}.__init_subclass__() takes no arguments ({pos_len} given)"
-                    )));
-                }
-                if has_kwargs {
-                    return Err(ExcType::type_error(format!(
-                        "{type_name}.__init_subclass__() takes no keyword arguments"
-                    )));
-                }
+                validate_init_subclass_args(&type_name, args, vm.heap)?;
                 Ok(CallResult::Value(Value::None))
             }
             // The type's plain attributes (`list.__name__`); a missing name

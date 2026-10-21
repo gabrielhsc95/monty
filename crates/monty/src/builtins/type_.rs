@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait, Type, str::allocate_string},
+    types::{Class, Dict, PyTrait, Type, class::ClassBase},
     value::Value,
 };
 
@@ -140,11 +140,10 @@ fn create_class(
         )));
     };
 
-    let mut bases_ids = Vec::with_capacity(tuple.as_slice().len());
+    let mut bases = Vec::with_capacity(tuple.as_slice().len());
     let mut base_names = Vec::with_capacity(tuple.as_slice().len());
     let mut seen_object = false;
     let mut seen_exc_type: Option<ExcType> = None;
-    let mut direct_exc_type: Option<ExcType> = None;
     for base in tuple.as_slice() {
         match base {
             Value::Builtin(Builtins::Type(Type::Object)) => {
@@ -152,6 +151,7 @@ fn create_class(
                     return Err(ExcType::type_error("duplicate base class object"));
                 }
                 seen_object = true;
+                bases.push(ClassBase::Object);
                 base_names.push("object");
             }
             Value::Builtin(Builtins::Type(ty)) => {
@@ -162,6 +162,9 @@ fn create_class(
             }
             Value::Builtin(Builtins::ExcType(exc_type)) => {
                 let type_name: &'static str = (*exc_type).into();
+                if bases.contains(&ClassBase::BuiltinExc(*exc_type)) {
+                    return Err(ExcType::type_error(format!("duplicate base class {type_name}")));
+                }
                 if let Some(existing) = seen_exc_type {
                     if existing == *exc_type {
                         return Err(ExcType::type_error(format!("duplicate base class {type_name}")));
@@ -175,13 +178,13 @@ fn create_class(
                 } else {
                     seen_exc_type = Some(*exc_type);
                 }
-                direct_exc_type = Some(*exc_type);
+                bases.push(ClassBase::BuiltinExc(*exc_type));
                 base_names.push(type_name);
             }
             Value::Ref(id) => {
                 if let HeapData::Class(cls) = vm.heap.get(*id) {
                     let cls_name = cls.name().as_str(vm.interns);
-                    if bases_ids.contains(id) {
+                    if bases.contains(&ClassBase::Class(*id)) {
                         return Err(ExcType::type_error(format!("duplicate base class {cls_name}")));
                     }
                     if let Some(parent_exc) = cls.base_exception() {
@@ -197,7 +200,7 @@ fn create_class(
                             seen_exc_type = Some(parent_exc);
                         }
                     }
-                    bases_ids.push(*id);
+                    bases.push(ClassBase::Class(*id));
                     base_names.push(cls_name);
                 } else {
                     let got = base.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -215,11 +218,8 @@ fn create_class(
         }
     }
 
-    if let Some(idx) = tuple
-        .as_slice()
-        .iter()
-        .position(|base| matches!(base, Value::Builtin(Builtins::Type(Type::Object))))
-        && idx < tuple.as_slice().len() - 1
+    if let Some(idx) = bases.iter().position(|base| matches!(base, ClassBase::Object))
+        && idx < bases.len() - 1
     {
         return Err(ExcType::type_error(format!(
             "Cannot create a consistent method resolution order (MRO) for bases {}",
@@ -227,7 +227,15 @@ fn create_class(
         )));
     }
 
-    let mro = compute_c3_mro(&bases_ids, &base_names, vm.heap)?;
+    let c3_bases = if bases.is_empty() {
+        vec![ClassBase::Object]
+    } else {
+        bases.clone()
+    };
+    let mut mro = compute_c3_mro(&c3_bases, &base_names, vm.heap)?;
+    if !mro.contains(&ClassBase::Object) {
+        mro.push(ClassBase::Object);
+    }
 
     let Value::Ref(ns_id) = namespace else {
         let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -250,6 +258,19 @@ fn create_class(
         )));
     }
 
+    let mut defined_methods = Vec::new();
+    for (_, val) in source {
+        match val {
+            Value::DefFunction(fid) => defined_methods.push(*fid),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Closure(c) => defined_methods.push(c.func_id),
+                HeapData::FunctionDefaults(d) => defined_methods.push(d.func_id),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
     // Copy the namespace (CPython semantics: the class owns an independent
     // dict). `clone_with_heap` takes `&Heap`, so the pairs can be cloned
     // while `source` still borrows the heap immutably.
@@ -266,9 +287,20 @@ fn create_class(
     if source.get_by_str("__eq__", vm.heap, vm.interns).is_some()
         && source.get_by_str("__hash__", vm.heap, vm.interns).is_none()
     {
-        pairs.push((allocate_string("__hash__", vm.heap), Value::None));
+        pairs.push((
+            Value::InternString(vm.interns.intern_static(StaticStrings::DunderHash)),
+            Value::None,
+        ));
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
+
+    let bases_ids: Vec<HeapId> = bases
+        .iter()
+        .filter_map(|b| match b {
+            ClassBase::Class(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
 
     for &base_id in &bases_ids {
         vm.heap.inc_ref(base_id);
@@ -278,16 +310,16 @@ fn create_class(
         class_name.clone(),
         namespace_dict,
         bases_ids,
+        bases,
         mro.clone(),
-        seen_object,
-        seen_exc_type,
-        direct_exc_type,
+        defined_methods,
     ))));
 
     // Look for __init_subclass__ in base classes' MRO
     let mut init_subclass = None;
-    for &base_id in &mro {
-        if let HeapData::Class(base_cls) = vm.heap.get(base_id)
+    for base in &mro {
+        if let ClassBase::Class(base_id) = base
+            && let HeapData::Class(base_cls) = vm.heap.get(*base_id)
             && let Some(val) = base_cls
                 .namespace()
                 .get_by_str("__init_subclass__", vm.heap, vm.interns)
@@ -324,14 +356,31 @@ fn create_class(
 }
 
 /// Computes Python's C3 method resolution order for the given base classes.
-fn compute_c3_mro(bases: &[HeapId], base_names: &[&str], heap: &Heap) -> RunResult<Vec<HeapId>> {
-    let mut sequences: Vec<Vec<HeapId>> = Vec::with_capacity(bases.len() + 1);
-    for &base_id in bases {
-        if let HeapData::Class(base_cls) = heap.get(base_id) {
-            let mut seq = Vec::with_capacity(1 + base_cls.mro().len());
-            seq.push(base_id);
-            seq.extend_from_slice(base_cls.mro());
-            sequences.push(seq);
+fn compute_c3_mro(bases: &[ClassBase], base_names: &[&str], heap: &Heap) -> RunResult<Vec<ClassBase>> {
+    let mut sequences: Vec<Vec<ClassBase>> = Vec::with_capacity(bases.len() + 1);
+    for &base in bases {
+        match base {
+            ClassBase::Class(base_id) => {
+                if let HeapData::Class(base_cls) = heap.get(base_id) {
+                    let mut seq = Vec::with_capacity(1 + base_cls.mro().len());
+                    seq.push(ClassBase::Class(base_id));
+                    seq.extend_from_slice(base_cls.mro());
+                    sequences.push(seq);
+                }
+            }
+            ClassBase::BuiltinExc(exc) => {
+                let mut seq = Vec::new();
+                let mut cur = Some(exc);
+                while let Some(e) = cur {
+                    seq.push(ClassBase::BuiltinExc(e));
+                    cur = e.parent();
+                }
+                seq.push(ClassBase::Object);
+                sequences.push(seq);
+            }
+            ClassBase::Object => {
+                sequences.push(vec![ClassBase::Object]);
+            }
         }
     }
     sequences.push(bases.to_vec());

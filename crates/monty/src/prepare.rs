@@ -874,12 +874,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     decorators,
                     position,
                 } => {
-                    let name_id = name.name_id;
                     let prepared =
                         self.prepare_class_def(name, bases, keywords, body, members, decorators, position)?;
-                    if self.is_class_scope {
-                        self.bound_class_members.insert(name_id);
-                    }
                     new_nodes.push(prepared);
                 }
                 Node::Global { names, position } => {

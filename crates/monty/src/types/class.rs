@@ -16,10 +16,18 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     heap_data::HeapData,
-    intern::Interns,
+    intern::{FunctionId, Interns},
     types::{Union, str::allocate_string},
     value::{EitherStr, Value},
 };
+
+/// An entry in a class's direct bases or C3 method resolution order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ClassBase {
+    Class(HeapId),
+    BuiltinExc(ExcType),
+    Object,
+}
 
 /// A user-defined class object created by a `class Foo: ...` statement.
 ///
@@ -29,9 +37,7 @@ use crate::{
 /// work via reference identity, so there is no separate type-id counter.
 ///
 /// Calling a class (`Foo(...)`) constructs an [`Instance`](super::Instance); see
-/// `instantiate_class` in the VM's call module. Inheritance is not yet supported,
-/// but a future `bases: Vec<HeapId>` field would slot in here without disturbing
-/// the rest of the design.
+/// `instantiate_class` in the VM's call module.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Class {
     /// Class name (e.g. `Foo`), used for `repr` and `__name__`. Interned for
@@ -44,13 +50,11 @@ pub(crate) struct Class {
     #[serde(default)]
     bases: Vec<HeapId>,
     #[serde(default)]
-    mro: Vec<HeapId>,
+    all_bases: Vec<ClassBase>,
     #[serde(default)]
-    has_explicit_object_base: bool,
+    mro: Vec<ClassBase>,
     #[serde(default)]
-    base_exception: Option<ExcType>,
-    #[serde(default)]
-    direct_exception: Option<ExcType>,
+    defined_methods: Vec<FunctionId>,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
@@ -58,34 +62,37 @@ pub(crate) struct Class {
 }
 
 impl Class {
-    /// Returns the direct base classes in declaration order.
+    /// Returns the direct user-class base IDs (used for GC and heap walking).
     pub(crate) fn bases(&self) -> &[HeapId] {
         &self.bases
     }
 
-    /// Whether `object` was explicitly included in direct base classes.
-    pub(crate) fn has_explicit_object_base(&self) -> bool {
-        self.has_explicit_object_base
+    /// Returns all direct base classes in declaration order (including built-in exceptions and object).
+    pub(crate) fn all_bases(&self) -> &[ClassBase] {
+        &self.all_bases
     }
 
     /// The base exception type if this class derives from `BaseException` / `Exception`.
     pub(crate) fn base_exception(&self) -> Option<ExcType> {
-        self.base_exception
-    }
-
-    /// The direct exception base if this class directly derives from an `ExcType`.
-    pub(crate) fn direct_exception(&self) -> Option<ExcType> {
-        self.direct_exception
+        self.mro.iter().find_map(|b| match b {
+            ClassBase::BuiltinExc(e) => Some(*e),
+            _ => None,
+        })
     }
 
     /// Returns the method resolution order (base classes in C3 linearization order).
-    pub(crate) fn mro(&self) -> &[HeapId] {
+    pub(crate) fn mro(&self) -> &[ClassBase] {
         &self.mro
+    }
+
+    /// Returns the method IDs defined directly in this class body.
+    pub(crate) fn defined_methods(&self) -> &[FunctionId] {
+        &self.defined_methods
     }
 
     /// Whether this class inherits from `target`.
     pub(crate) fn is_subclass_of(&self, target: HeapId) -> bool {
-        self.mro.contains(&target)
+        self.mro.contains(&ClassBase::Class(target))
     }
 
     /// Searches the class namespace and base classes in C3 MRO order, returning a borrowed reference.
@@ -101,8 +108,9 @@ impl Class {
         }
 
         // 2. Check base classes in C3 MRO order
-        for &base_id in &self.mro {
-            if let HeapData::Class(base_class) = heap.get(base_id)
+        for base in &self.mro {
+            if let ClassBase::Class(base_id) = base
+                && let HeapData::Class(base_class) = heap.get(*base_id)
                 && let Some(val) = base_class.namespace.get_by_str(attr_str, heap, interns)
             {
                 return Some(val);
@@ -124,19 +132,17 @@ impl Class {
         name: EitherStr,
         namespace: Dict,
         bases: Vec<HeapId>,
-        mro: Vec<HeapId>,
-        has_explicit_object_base: bool,
-        base_exception: Option<ExcType>,
-        direct_exception: Option<ExcType>,
+        all_bases: Vec<ClassBase>,
+        mro: Vec<ClassBase>,
+        defined_methods: Vec<FunctionId>,
     ) -> Self {
         Self {
             name,
             namespace,
             bases,
+            all_bases,
             mro,
-            has_explicit_object_base,
-            base_exception,
-            direct_exception,
+            defined_methods,
             uuid: None,
         }
     }
@@ -200,23 +206,72 @@ impl<'h> HeapReadMut<'h, Class> {
     }
 }
 
-fn class_mro_values(class_id: HeapId, mro: &[HeapId], base_exception: Option<ExcType>, heap: &mut Heap) -> Vec<Value> {
-    let mut items = Vec::with_capacity(2 + mro.len() + 4);
-    heap.inc_ref(class_id);
-    items.push(Value::Ref(class_id));
-    for &id in mro {
-        heap.inc_ref(id);
-        items.push(Value::Ref(id));
-    }
-    if let Some(exc) = base_exception {
-        let mut cur = Some(exc);
-        while let Some(e) = cur {
-            items.push(Value::Builtin(Builtins::ExcType(e)));
-            cur = e.parent();
+pub(crate) fn class_bases_values(all_bases: &[ClassBase], heap: &mut Heap) -> Vec<Value> {
+    let mut items = Vec::with_capacity(all_bases.len().max(1));
+    for &base in all_bases {
+        match base {
+            ClassBase::Class(id) => {
+                heap.inc_ref(id);
+                items.push(Value::Ref(id));
+            }
+            ClassBase::BuiltinExc(exc) => {
+                items.push(Value::Builtin(Builtins::ExcType(exc)));
+            }
+            ClassBase::Object => {
+                items.push(Value::Builtin(Builtins::Type(Type::Object)));
+            }
         }
     }
-    items.push(Value::Builtin(Builtins::Type(Type::Object)));
+    if items.is_empty() {
+        items.push(Value::Builtin(Builtins::Type(Type::Object)));
+    }
     items
+}
+
+pub(crate) fn class_mro_values(class_id: HeapId, mro: &[ClassBase], heap: &mut Heap) -> Vec<Value> {
+    let mut items = Vec::with_capacity(1 + mro.len() + 1);
+    heap.inc_ref(class_id);
+    items.push(Value::Ref(class_id));
+    for &base in mro {
+        match base {
+            ClassBase::Class(id) => {
+                heap.inc_ref(id);
+                items.push(Value::Ref(id));
+            }
+            ClassBase::BuiltinExc(exc) => {
+                items.push(Value::Builtin(Builtins::ExcType(exc)));
+            }
+            ClassBase::Object => {
+                items.push(Value::Builtin(Builtins::Type(Type::Object)));
+            }
+        }
+    }
+    if !items
+        .iter()
+        .any(|v| matches!(v, Value::Builtin(Builtins::Type(Type::Object))))
+    {
+        items.push(Value::Builtin(Builtins::Type(Type::Object)));
+    }
+    items
+}
+
+pub(crate) fn validate_init_subclass_args(target_name: &str, args: ArgValues, heap: &mut Heap) -> RunResult<()> {
+    let (pos, kwargs) = args.into_parts();
+    let pos_len = pos.as_slice().len();
+    pos.drop_with(heap);
+    let has_kwargs = !kwargs.is_empty();
+    kwargs.drop_with(heap);
+    if pos_len > 0 {
+        return Err(ExcType::type_error(format!(
+            "{target_name}.__init_subclass__() takes no arguments ({pos_len} given)"
+        )));
+    }
+    if has_kwargs {
+        return Err(ExcType::type_error(format!(
+            "{target_name}.__init_subclass__() takes no keyword arguments"
+        )));
+    }
+    Ok(())
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
@@ -292,29 +347,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         }
 
         if attr_str == "__bases__" {
-            let class = self.get(vm.heap);
-            let bases = class.bases();
-            let mut items = Vec::with_capacity(bases.len() + 1);
-            for &base_id in bases {
-                vm.heap.inc_ref(base_id);
-                items.push(Value::Ref(base_id));
-            }
-            if let Some(exc) = class.direct_exception() {
-                items.push(Value::Builtin(Builtins::ExcType(exc)));
-            } else if bases.is_empty() || class.has_explicit_object_base() {
-                items.push(Value::Builtin(Builtins::Type(Type::Object)));
-            }
+            let all_bases = self.get(vm.heap).all_bases().to_vec();
+            let items = class_bases_values(&all_bases, vm.heap);
             let tuple_val = allocate_tuple(items.into(), vm.heap);
             return Ok(Some(CallResult::Value(tuple_val)));
         }
 
         if attr_str == "__mro__" {
             let class_id = self.id();
-            let (mro, base_exception) = {
-                let class = self.get(vm.heap);
-                (class.mro().to_vec(), class.base_exception())
-            };
-            let items = class_mro_values(class_id, &mro, base_exception, vm.heap);
+            let mro = self.get(vm.heap).mro().to_vec();
+            let items = class_mro_values(class_id, &mro, vm.heap);
             let tuple_val = allocate_tuple(items.into(), vm.heap);
             return Ok(Some(CallResult::Value(tuple_val)));
         }
@@ -354,11 +396,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
                 )));
             }
             let class_id = self.id();
-            let (mro, base_exception) = {
-                let class = self.get(vm.heap);
-                (class.mro().to_vec(), class.base_exception())
-            };
-            let items = class_mro_values(class_id, &mro, base_exception, vm.heap);
+            let mro = self.get(vm.heap).mro().to_vec();
+            let items = class_mro_values(class_id, &mro, vm.heap);
             let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
             return Ok(CallResult::Value(Value::Ref(list_id)));
         }
@@ -371,22 +410,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         }
 
         if attr_str == "__init_subclass__" {
-            let (pos, kwargs) = args.into_parts();
-            let pos_len = pos.as_slice().len();
-            pos.drop_with(vm.heap);
-            let has_kwargs = !kwargs.is_empty();
-            kwargs.drop_with(vm.heap);
-            let class_name = self.get(vm.heap).name.as_str(vm.interns);
-            if pos_len > 0 {
-                return Err(ExcType::type_error(format!(
-                    "{class_name}.__init_subclass__() takes no arguments ({pos_len} given)"
-                )));
-            }
-            if has_kwargs {
-                return Err(ExcType::type_error(format!(
-                    "{class_name}.__init_subclass__() takes no keyword arguments"
-                )));
-            }
+            let class_name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
+            validate_init_subclass_args(&class_name, args, vm.heap)?;
             return Ok(CallResult::Value(Value::None));
         }
 
