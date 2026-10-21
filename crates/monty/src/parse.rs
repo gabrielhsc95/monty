@@ -1055,12 +1055,27 @@ impl<'a, 'i> Parser<'a, 'i> {
         let position = self.class_keyword_range(&class);
         let decorators = self.parse_decorators(class.decorator_list)?;
         let mut bases = Vec::new();
-        // `class.arguments` carries base classes and metaclass keywords.
+        let mut keywords = Vec::new();
+        // `class.arguments` carries base classes and kwargs.
         if let Some(arguments) = &class.arguments {
             // CPython rejects the repeat before it would consider the metaclass.
             self.check_repeated_keywords(&arguments.keywords)?;
-            if !arguments.keywords.is_empty() {
-                return Err(ParseError::not_implemented("metaclasses", position));
+            for keyword in &arguments.keywords {
+                let Some(arg) = &keyword.arg else {
+                    return Err(ParseError::not_implemented(
+                        "**kwargs unpacking in class definition",
+                        self.convert_range(keyword.range),
+                    ));
+                };
+                if arg.as_str() == "metaclass" {
+                    return Err(ParseError::not_implemented(
+                        "metaclasses",
+                        self.convert_range(keyword.range),
+                    ));
+                }
+                let key = self.identifier(&arg.id, arg.range);
+                let value = self.parse_expression(keyword.value.clone())?;
+                keywords.push(Kwarg { key, value });
             }
 
             for base_expr in &arguments.args {
@@ -1237,6 +1252,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         Ok(Node::ClassDef {
             name,
             bases,
+            keywords,
             body,
             members,
             decorators,

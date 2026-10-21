@@ -395,25 +395,17 @@ fn dynamic_type_with_builtin_base_raises_type_error() {
 }
 
 #[test]
-fn class_with_builtin_exception_base_raises_type_error() {
-    let code = "class MyError(Exception):\n    pass";
+fn class_with_builtin_exception_base_succeeds() {
+    let code = "class MyError(Exception):\n    pass\nerr = MyError('test')\nassert err.args == ('test',)\nassert isinstance(err, Exception)";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let err = ex.run_no_limits(vec![]).unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    class MyError(Exception):\n        pass\nTypeError: type 'Exception' is not an acceptable base type"
-    );
+    ex.run_no_limits(vec![]).unwrap();
 }
 
 #[test]
-fn dynamic_type_with_builtin_exception_base_raises_type_error() {
-    let code = "type('E', (ValueError,), {})";
+fn dynamic_type_with_builtin_exception_base_succeeds() {
+    let code = "E = type('E', (ValueError,), {})\nerr = E('test')\nassert isinstance(err, ValueError)";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let err = ex.run_no_limits(vec![]).unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('E', (ValueError,), {})\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nTypeError: type 'ValueError' is not an acceptable base type"
-    );
+    ex.run_no_limits(vec![]).unwrap();
 }
 
 #[test]

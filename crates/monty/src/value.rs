@@ -1880,6 +1880,67 @@ impl Value {
                     None => Err(t.attribute_error(attr, vm)),
                 };
             }
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                let attr_str = attr.as_str(vm.interns);
+                return match attr_str {
+                    "__name__" => {
+                        let name: &'static str = (*exc_type).into();
+                        Ok(CallResult::Value(allocate_string(name, vm.heap)))
+                    }
+                    "__class__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::Type,
+                    )))),
+                    "__bases__" => {
+                        let items = match exc_type.parent() {
+                            None => vec![Self::Builtin(Builtins::Type(Type::Object))],
+                            Some(parent) => vec![Self::Builtin(Builtins::ExcType(parent))],
+                        };
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__mro__" => {
+                        let mut items = vec![Self::Builtin(Builtins::ExcType(*exc_type))];
+                        let mut cur = exc_type.parent();
+                        while let Some(parent) = cur {
+                            items.push(Self::Builtin(Builtins::ExcType(parent)));
+                            cur = parent.parent();
+                        }
+                        items.push(Self::Builtin(Builtins::Type(Type::Object)));
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__new__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::ObjectNew,
+                    )))),
+                    _ => Err(ExcType::attribute_error_type(
+                        (*exc_type).into(),
+                        attr.as_str(vm.interns),
+                    )),
+                };
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                let attr_str = attr.as_str(vm.interns);
+                return match attr_str {
+                    "__name__" => Ok(CallResult::Value(allocate_string("type", vm.heap))),
+                    "__class__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::Type,
+                    )))),
+                    "__bases__" => {
+                        let items = vec![Self::Builtin(Builtins::Type(Type::Object))];
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__mro__" => {
+                        let items = vec![
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                            Self::Builtin(Builtins::Type(Type::Object)),
+                        ];
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    _ => Err(ExcType::attribute_error_type("type", attr.as_str(vm.interns))),
+                };
+            }
             _ => {}
         }
         let type_name = self.py_type_name(vm);

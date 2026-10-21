@@ -174,6 +174,25 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `issubclass()` raises for a `types.GenericAlias`
+    /// second argument.
+    #[must_use]
+    fn issubclass_parameterized_generic() -> RunError {
+        Self::type_error("issubclass() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates a TypeError for issubclass() arg 1.
+    #[must_use]
+    fn issubclass_arg1_error() -> RunError {
+        Self::type_error("issubclass() arg 1 must be a class")
+    }
+
+    /// Creates a TypeError for issubclass() arg 2.
+    #[must_use]
+    fn issubclass_arg2_error() -> RunError {
+        Self::type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")
+    }
+
     /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
     /// between values whose types define no ordering, e.g. `1 < 'a'` or two
     /// instances of a user class without comparison dunders.
@@ -1383,6 +1402,11 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn value_error_precision_too_big() -> RunError {
         SimpleException::new_msg(ExcType::ValueError, "precision too big").into()
+    }
+
+    #[must_use]
+    fn runtime_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, msg).into()
     }
 
     /// Creates a TypeError for isinstance() arg 2.

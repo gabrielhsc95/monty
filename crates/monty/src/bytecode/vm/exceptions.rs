@@ -10,7 +10,7 @@ use crate::{
     expressions::CmpOperator,
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait},
     value::Value,
 };
 
@@ -82,6 +82,21 @@ impl VM<'_> {
             Value::Ref(heap_id) => {
                 if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
                     exc.clone()
+                } else if let HeapData::Instance(inst) = self.heap.get(*heap_id)
+                    && let HeapData::Class(cls) = self.heap.get(inst.class())
+                    && let Some(base_exc) = cls.base_exception()
+                {
+                    let text = exc_value.py_str(self);
+                    let message = match text {
+                        Ok(value) => {
+                            let this = &mut *self;
+                            defer_drop!(value, this);
+                            value.to_str(this).unwrap_or("<exception str() failed>").to_owned()
+                        }
+                        Err(error @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => return error,
+                        Err(_) => "<exception str() failed>".to_owned(),
+                    };
+                    SimpleException::new_msg(base_exc, message)
                 } else {
                     // Not an exception type
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
@@ -447,49 +462,69 @@ impl VM<'_> {
     /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
     /// raising `TypeError` still raises the `TypeError` about catching classes).
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
-        let exc_type_enum = exception.py_type(self);
-        match exc_type {
-            // Single exception class.
-            Value::Builtin(Builtins::ExcType(handler_type)) => {
-                Ok(Self::exc_matches_handler(exc_type_enum, *handler_type))
+        if let Value::Ref(id) = exc_type
+            && let HeapData::Tuple(tuple) = self.heap.get(*id)
+        {
+            let mut matched = false;
+            for v in tuple.as_slice() {
+                let this_match = self.check_single_handler(exception, v)?;
+                if !matched && this_match {
+                    matched = true;
+                }
             }
-            // Flat tuple of exception classes. CPython does not descend into
-            // nested tuples in this position, so neither do we.
-            Value::Ref(id) => {
-                if let HeapData::Tuple(tuple) = self.heap.get(*id) {
-                    let mut matched = false;
-                    for v in tuple.as_slice() {
-                        match v {
-                            Value::Builtin(Builtins::ExcType(handler_type)) => {
-                                if !matched && Self::exc_matches_handler(exc_type_enum, *handler_type) {
-                                    matched = true;
+            return Ok(matched);
+        }
+        self.check_single_handler(exception, exc_type)
+    }
+
+    fn check_single_handler(&self, exception: &Value, handler: &Value) -> Result<bool, RunError> {
+        match handler {
+            Value::Builtin(Builtins::ExcType(handler_type)) => {
+                let matched = match exception {
+                    Value::Ref(id) => match self.heap.get(*id) {
+                        HeapData::Exception(e) => e.exc_type().is_subclass_of(*handler_type),
+                        HeapData::Instance(inst) => {
+                            if let HeapData::Class(cls) = self.heap.get(inst.class())
+                                && let Some(base_exc) = cls.base_exception()
+                            {
+                                base_exc.is_subclass_of(*handler_type)
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                Ok(matched)
+            }
+            Value::Ref(class_id) => {
+                if let HeapData::Class(handler_cls) = self.heap.get(*class_id)
+                    && handler_cls.base_exception().is_some()
+                {
+                    let matched = match exception {
+                        Value::Ref(id) => match self.heap.get(*id) {
+                            HeapData::Instance(inst) => {
+                                let inst_cls_id = inst.class();
+                                if inst_cls_id == *class_id {
+                                    true
+                                } else if let HeapData::Class(inst_cls) = self.heap.get(inst_cls_id) {
+                                    inst_cls.is_subclass_of(*class_id)
+                                } else {
+                                    false
                                 }
                             }
-                            // A nested tuple or any non-exception value is
-                            // rejected exactly as CPython rejects it, even if a
-                            // previous element already matched.
-                            _ => return Err(ExcType::except_invalid_type_error()),
-                        }
-                    }
+                            _ => false,
+                        },
+                        _ => false,
+                    };
                     Ok(matched)
                 } else {
-                    // A non-tuple heap value (e.g. an exception instance) is not
-                    // a valid exception type for an `except` clause.
                     Err(ExcType::except_invalid_type_error())
                 }
             }
-            // Any other value is invalid for an `except` clause.
             _ => Err(ExcType::except_invalid_type_error()),
         }
-    }
-
-    /// Returns whether a raised exception's type is caught by `handler_type`.
-    ///
-    /// Helper shared by the single-class and flat-tuple arms of
-    /// [`check_exc_match`]; the raised value only matches when its type is an
-    /// exception that is a subclass of the handler's class.
-    fn exc_matches_handler(exc_type_enum: Type, handler_type: ExcType) -> bool {
-        matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(handler_type))
     }
 }
 

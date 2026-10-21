@@ -2,7 +2,7 @@
 use strum::IntoEnumIterator;
 
 use crate::{
-    args::{ArgExprs, Signature},
+    args::{ArgExprs, Kwarg, Signature},
     builtins::Builtins,
     fstring::FStringPart,
     intern::{BytesId, LongIntId, StringId},
@@ -826,6 +826,8 @@ pub enum Node<F> {
         name: Identifier,
         /// The base classes to inherit from (may include `*unpack` items).
         bases: Vec<SequenceItem>,
+        /// Keyword arguments passed to the class definition (e.g. `class Sub(Base, extra="val"):`).
+        keywords: Vec<Kwarg>,
         /// The synthetic class-body function: its body is the class statements
         /// in source order. Prepared and compiled exactly like a function; its
         /// emitted code ends by building the namespace `Dict` and returning the
