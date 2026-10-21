@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 
 fn run(code: &str) {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
@@ -1298,4 +1300,33 @@ assert UnpackSub.k == "unpacked"
         )
         .is_err()
     );
+}
+
+#[test]
+fn nested_tuple_subclass_and_isinstance_checks_respect_time_limits() {
+    let code_issubclass = r"
+t = str
+for _ in range(60):
+    t = (t, t)
+issubclass(int, t)
+";
+    let mut ex = MontyRun::new(code_issubclass.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err(), "should exceed time limit in issubclass");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+
+    let code_isinstance = r"
+t = str
+for _ in range(60):
+    t = (t, t)
+isinstance(1, t)
+";
+    let mut ex = MontyRun::new(code_isinstance.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err(), "should exceed time limit in isinstance");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }

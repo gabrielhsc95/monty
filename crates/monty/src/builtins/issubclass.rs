@@ -47,6 +47,8 @@ fn validate_is_class(val: &Value, vm: &VM<'_>) -> RunResult<()> {
 
 /// Checks if `cls` is a subclass of `classinfo`.
 pub(crate) fn issubclass_check(cls: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
+    vm.heap.tracker.check_time()?;
+
     if let Value::Ref(id) = classinfo {
         match vm.heap.read(*id) {
             HeapReadOutput::Tuple(tuple) => return issubclass_check_tuple(cls, &tuple, vm),
