@@ -47,8 +47,6 @@ fn validate_is_class(val: &Value, vm: &VM<'_>) -> RunResult<()> {
 
 /// Checks if `cls` is a subclass of `classinfo`.
 pub(crate) fn issubclass_check(cls: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
-    vm.heap.tracker.check_time()?;
-
     if let Value::Ref(id) = classinfo {
         match vm.heap.read(*id) {
             HeapReadOutput::Tuple(tuple) => return issubclass_check_tuple(cls, &tuple, vm),
@@ -152,10 +150,12 @@ fn class_is_subclass_of_host_class(cls: &Value, target_id: HeapId, vm: &VM<'_>) 
 }
 
 fn issubclass_check_tuple<'h>(cls: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut VM<'h>) -> RunResult<bool> {
+    vm.heap.tracker.check_time()?;
     let len = tuple.get(vm.heap).as_slice().len();
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
     for i in 0..len {
+        vm.heap.tracker.check_time_every(i)?;
         let item = tuple.get(vm.heap).as_slice()[i].clone_with_heap(vm.heap);
         defer_drop!(item, vm);
         if issubclass_check(cls, item, vm)? {

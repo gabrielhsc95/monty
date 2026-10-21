@@ -33,7 +33,6 @@ pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 ///   id; the host sends no bases)
 /// - Tuples (possibly nested) of the above
 pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
-    vm.heap.tracker.check_time()?;
     match classinfo {
         Value::Builtin(Builtins::Type(t)) => Ok(obj.py_type(vm).is_instance_of(*t)),
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(matches!(
