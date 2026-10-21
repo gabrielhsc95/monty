@@ -861,7 +861,7 @@ except ValueError as e:
 
 #[test]
 fn issubclass_builtin_and_type_checks() {
-    run(r#"
+    run(r"
 class Grandparent:
     pass
 
@@ -904,7 +904,7 @@ assert issubclass(type, object)
 assert issubclass(type, type)
 assert issubclass(Child, object)
 assert not issubclass(Child, type)
-"#);
+");
 }
 
 #[test]
@@ -1177,7 +1177,7 @@ assert s_deep.y == {"a": 1}
     // Repl session snapshotting and restoring class hierarchy with super()
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run(
-        r#"
+        r"
 class A:
     def val(self):
         return 10
@@ -1187,7 +1187,7 @@ class B(A):
         return super().val() + 20
 
 b = B()
-"#,
+",
         vec![],
         PrintWriter::Stdout,
     )
