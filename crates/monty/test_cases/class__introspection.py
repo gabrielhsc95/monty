@@ -1,5 +1,6 @@
 # Tests for class introspection: __bases__, __mro__, and mro()
 
+
 class A:
     pass
 
@@ -77,14 +78,14 @@ assert str.mro() == [str, object]
 # Error handling: mro() takes no arguments
 try:
     A.mro(1)
-    assert False, "expected TypeError"
+    assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "A.mro() takes no arguments (1 given)"
+    assert str(e) == 'A.mro() takes no arguments (1 given)'
 
 try:
     int.mro(1, 2)
-    assert False, "expected TypeError"
+    assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "int.mro() takes no arguments (2 given)"
+    assert str(e) == 'int.mro() takes no arguments (2 given)'
 
-print("introspection tests passed")
+print('introspection tests passed')

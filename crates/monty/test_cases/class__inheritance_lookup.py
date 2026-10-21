@@ -1,4 +1,5 @@
 # Class and instance lookup follow the parent chain; instance methods bind the child.
+# pyright: reportRedeclaration=false
 
 
 class Parent:

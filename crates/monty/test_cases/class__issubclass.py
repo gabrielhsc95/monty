@@ -2,26 +2,34 @@
 from collections import Counter, defaultdict, namedtuple
 from datetime import date, datetime
 
+
 class Base:
     pass
+
 
 class Derived(Base):
     pass
 
+
 class Other:
     pass
+
 
 class Root:
     pass
 
+
 class Left(Root):
     pass
+
 
 class Right(Root):
     pass
 
+
 class Bottom(Left, Right):
     pass
+
 
 # 1. User classes
 assert issubclass(Base, Base)
@@ -52,7 +60,7 @@ assert issubclass(Counter, dict)
 assert not issubclass(dict, Counter)
 
 # 3. Namedtuple
-Point = namedtuple("Point", ["x", "y"])
+Point = namedtuple('Point', ['x', 'y'])
 assert issubclass(Point, Point)
 assert issubclass(Point, tuple)
 assert issubclass(Point, object)
@@ -80,43 +88,43 @@ assert issubclass(Derived, Base | Other)
 assert not issubclass(Derived, Other | int)
 
 # Short-circuiting in tuple
-assert issubclass(int, (int, "not_a_type"))
+assert issubclass(int, (int, 'not_a_type'))
 
 # 6. Error handling
 try:
     issubclass(1, int)
-    assert False, "expected TypeError for arg 1"
+    assert False, 'expected TypeError for arg 1'
 except TypeError as e:
-    assert str(e) == "issubclass() arg 1 must be a class"
+    assert str(e) == 'issubclass() arg 1 must be a class'
 
 try:
     issubclass(Base(), Base)
-    assert False, "expected TypeError for instance as arg 1"
+    assert False, 'expected TypeError for instance as arg 1'
 except TypeError as e:
-    assert str(e) == "issubclass() arg 1 must be a class"
+    assert str(e) == 'issubclass() arg 1 must be a class'
 
 try:
     issubclass(Base, 1)
-    assert False, "expected TypeError for arg 2"
+    assert False, 'expected TypeError for arg 2'
 except TypeError as e:
-    assert str(e) == "issubclass() arg 2 must be a class, a tuple of classes, or a union"
+    assert str(e) == 'issubclass() arg 2 must be a class, a tuple of classes, or a union'
 
 try:
     issubclass(int, (str, 1))
-    assert False, "expected TypeError for invalid item in tuple arg 2"
+    assert False, 'expected TypeError for invalid item in tuple arg 2'
 except TypeError as e:
-    assert str(e) == "issubclass() arg 2 must be a class, a tuple of classes, or a union"
+    assert str(e) == 'issubclass() arg 2 must be a class, a tuple of classes, or a union'
 
 try:
     issubclass(int, list[int])
-    assert False, "expected TypeError for parameterized generic"
+    assert False, 'expected TypeError for parameterized generic'
 except TypeError as e:
-    assert str(e) == "issubclass() argument 2 cannot be a parameterized generic"
+    assert str(e) == 'issubclass() argument 2 cannot be a parameterized generic'
 
 try:
     issubclass(list[int], list)
-    assert False, "expected TypeError for generic as arg 1"
+    assert False, 'expected TypeError for generic as arg 1'
 except TypeError as e:
-    assert str(e) == "issubclass() arg 1 must be a class"
+    assert str(e) == 'issubclass() arg 1 must be a class'
 
-print("issubclass tests passed")
+print('issubclass tests passed')

@@ -6,7 +6,8 @@ class Animal:
         self.name = name
 
     def speak(self):
-        return f"{self.name} makes a sound"
+        return f'{self.name} makes a sound'
+
 
 class Dog(Animal):
     def __init__(self, name, breed):
@@ -15,45 +16,54 @@ class Dog(Animal):
 
     def speak(self):
         parent = super().speak()
-        return f"{parent} and barks"
+        return f'{parent} and barks'
 
-d = Dog("Rex", "German Shepherd")
+
+d = Dog('Rex', 'German Shepherd')
 print(d.name)
 print(d.breed)
 print(d.speak())
 
+
 # --- Diamond multiple inheritance (cooperative MRO) ---
 class A:
     def greet(self):
-        return ["A"]
+        return ['A']
+
 
 class B(A):
     def greet(self):
-        return ["B"] + super().greet()
+        return ['B'] + super().greet()
+
 
 class C(A):
     def greet(self):
-        return ["C"] + super().greet()
+        return ['C'] + super().greet()
+
 
 class D(B, C):
     def greet(self):
-        return ["D"] + super().greet()
+        return ['D'] + super().greet()
+
 
 d_obj = D()
 print(d_obj.greet())
 
+
 # --- Two-argument super(Class, self) ---
 class Base:
     def foo(self):
-        return "Base.foo"
+        return 'Base.foo'
+
 
 class Mid(Base):
     def foo(self):
-        return "Mid.foo"
+        return 'Mid.foo'
+
 
 class Sub(Mid):
     def foo(self):
-        return "Sub.foo"
+        return 'Sub.foo'
 
     def mid_foo(self):
         return super().foo()
@@ -61,27 +71,34 @@ class Sub(Mid):
     def base_foo(self):
         return super(Mid, self).foo()
 
+
 s = Sub()
 print(s.foo())
 print(s.mid_foo())
 print(s.base_foo())
 
+
 # --- super(Class, Subclass) type-binding ---
 class Shape:
-    kind = "generic shape"
+    kind = 'generic shape'
+
 
 class Polygon(Shape):
-    kind = "polygon"
+    kind = 'polygon'
+
 
 class Triangle(Polygon):
-    kind = "triangle"
+    kind = 'triangle'
+
 
 print(super(Triangle, Triangle).kind)
 print(super(Polygon, Triangle).kind)
 
+
 # --- Introspection attributes ---
 class X:
     pass
+
 
 class Y(X):
     def check_super(self):
@@ -89,6 +106,7 @@ class Y(X):
         print(s.__thisclass__.__name__)
         print(type(s.__self__).__name__)
         print(s.__self_class__.__name__)
+
 
 y = Y()
 y.check_super()
@@ -104,13 +122,15 @@ print(repr(super(Y)))
 print(repr(super(Y, y)))
 print(repr(super(X, Y)))
 
+
 # --- object.__init__ via super() ---
 class Leaf:
     def __init__(self):
         super().__init__()
 
+
 Leaf()
-print("Leaf initialized")
+print('Leaf initialized')
 
 # --- Error conditions ---
 try:
@@ -119,7 +139,7 @@ except TypeError as e:
     print(e)
 
 try:
-    super(X, "not_an_instance")
+    super(X, 'not_an_instance')
 except TypeError as e:
     print(e)
 
@@ -138,8 +158,10 @@ try:
 except TypeError as e:
     print(e)
 
+
 def free_func():
     super()
+
 
 try:
     free_func()

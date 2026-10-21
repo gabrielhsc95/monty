@@ -1,4 +1,5 @@
 # Redefinition rebinds the name; descendants retain the original parent object.
+# pyright: reportRedeclaration=false
 
 
 class Parent:

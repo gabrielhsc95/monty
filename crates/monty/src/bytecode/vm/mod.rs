@@ -19,8 +19,6 @@ mod scheduler;
 
 use std::{borrow::Cow, mem};
 
-use crate::defer_drop;
-
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
@@ -37,7 +35,7 @@ use crate::{
         code::{Code, LocationEntry},
         op::{MATCH_KEYS_REST, Opcode, decode_assert_flags},
     },
-    defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
