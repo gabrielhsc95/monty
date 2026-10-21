@@ -121,17 +121,8 @@ impl VM<'_> {
                     && let HeapData::Class(cls) = self.heap.get(inst.class())
                     && let Some(base_exc) = cls.base_exception()
                 {
-                    let text = exc_value.py_str(self);
-                    let message = match text {
-                        Ok(value) => {
-                            let this = &mut *self;
-                            defer_drop!(value, this);
-                            value.to_str(this).unwrap_or("<exception str() failed>").to_owned()
-                        }
-                        Err(error @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => return error,
-                        Err(_) => "<exception str() failed>".to_owned(),
-                    };
-                    SimpleException::new_msg(base_exc, message)
+                    let custom_name = cls.name().as_str(self.interns).to_owned();
+                    SimpleException::new_none(base_exc).with_custom_type_name(Some(custom_name))
                 } else {
                     // Not an exception type
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
@@ -427,6 +418,8 @@ impl VM<'_> {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
 
+                format_unhandled_custom_exception(&mut error, &mut exc_guard);
+
                 // Drop exc_value before potentially switching tasks
                 drop(exc_guard);
 
@@ -467,6 +460,7 @@ impl VM<'_> {
                 }
             }
             if should_return {
+                format_unhandled_custom_exception(&mut error, &mut exc_guard);
                 return ExceptionHandlingResult::Unhandled(error);
             }
         }
@@ -668,6 +662,23 @@ impl Write for TruncatingWriter {
             self.remaining = 0;
             self.truncated = true;
             Err(fmt::Error)
+        }
+    }
+}
+
+fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropGuard<'_, VM<'_>, Value>) {
+    if let RunError::Exc(raise) = error
+        && raise.exc.arg().is_none()
+        && raise.exc.custom_type_name().is_some()
+    {
+        let (exc_val, this) = exc_guard.as_parts();
+        if let Ok(text) = exc_val.py_str(this) {
+            defer_drop!(text, this);
+            if let Ok(s) = text.to_str(this)
+                && !s.is_empty()
+            {
+                raise.exc.set_arg(Some(s.to_owned()));
+            }
         }
     }
 }

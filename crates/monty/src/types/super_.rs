@@ -4,17 +4,22 @@ use std::{borrow::Cow, fmt::Write};
 
 use super::{
     LazyHeapSet, PyTrait, Type,
+    class::{ClassBase, validate_init_subclass_args},
     instance::{BoundMethod, class_name, is_method_value},
+    tuple::allocate_tuple,
 };
 use crate::{
     args::ArgValues,
-    builtins::{Builtins, isinstance::isinstance_check, issubclass::issubclass_check},
+    builtins::{
+        Builtins, BuiltinsFunctions, isinstance::isinstance_check, issubclass::issubclass_check,
+        object_new::builtin_object_new,
+    },
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::FunctionId,
+    intern::{FunctionId, StaticStrings},
     value::{EitherStr, Value},
 };
 
@@ -65,6 +70,10 @@ pub fn builtin_super(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 obj_arg.drop_with(vm.heap);
                 return Err(e);
             }
+            if matches!(obj_arg, Value::None) {
+                let s = Super::new(type_arg, None);
+                return Ok(Value::Ref(vm.heap.allocate(HeapData::Super(s))));
+            }
             if let Err(e) = validate_super_obj(&type_arg, &obj_arg, vm) {
                 type_arg.drop_with(vm.heap);
                 obj_arg.drop_with(vm.heap);
@@ -103,14 +112,11 @@ fn zero_arg_super(vm: &mut VM<'_>) -> RunResult<Value> {
             .code()
             .local_name(slot)
             .is_some_and(|name_id| vm.interns.get_str(name_id) == "__class__");
-        if name_match {
-            let val = match vm.stack[base + usize::from(slot)] {
-                Value::Ref(cell_id) => match vm.heap.get(cell_id) {
-                    HeapData::Cell(cell) => cell.0.clone_with_heap(vm.heap),
-                    _ => Value::Undefined,
-                },
-                ref other => other.clone_with_heap(vm.heap),
-            };
+        if name_match
+            && let Value::Ref(cell_id) = vm.stack[base + usize::from(slot)]
+            && let HeapData::Cell(cell) = vm.heap.get(cell_id)
+        {
+            let val = cell.0.clone_with_heap(vm.heap);
             if !matches!(val, Value::Undefined) {
                 class_val = Some(val);
                 break;
@@ -128,6 +134,9 @@ fn zero_arg_super(vm: &mut VM<'_>) -> RunResult<Value> {
         return Err(ExcType::runtime_error("super(): __class__ cell not found"));
     };
     defer_drop!(class_val, vm);
+
+    validate_super_type(class_val, vm)?;
+    validate_super_obj(class_val, self_val, vm)?;
 
     let type_arg = class_val.clone_with_heap(vm.heap);
     let obj_arg = self_val.clone_with_heap(vm.heap);
@@ -149,47 +158,42 @@ fn find_defining_class(func_id: FunctionId, self_val: &Value, vm: &VM<'_>) -> Op
         return None;
     };
 
-    let mut mro_classes = Vec::with_capacity(1 + start_class.mro().len());
-    mro_classes.push(start_class_id);
-    mro_classes.extend_from_slice(start_class.mro());
+    if start_class.defined_methods().contains(&func_id) {
+        vm.heap.inc_ref(start_class_id);
+        return Some(Value::Ref(start_class_id));
+    }
 
-    for &cls_id in &mro_classes {
-        if let HeapData::Class(cls) = vm.heap.get(cls_id) {
-            for (_, val) in cls.namespace() {
-                if let Value::DefFunction(fid) = val {
-                    if *fid == func_id {
-                        vm.heap.inc_ref(cls_id);
-                        return Some(Value::Ref(cls_id));
-                    }
-                } else if let Value::Ref(cid) = val {
-                    match vm.heap.get(*cid) {
-                        HeapData::Closure(closure) if closure.func_id == func_id => {
-                            vm.heap.inc_ref(cls_id);
-                            return Some(Value::Ref(cls_id));
-                        }
-                        HeapData::FunctionDefaults(fd) if fd.func_id == func_id => {
-                            vm.heap.inc_ref(cls_id);
-                            return Some(Value::Ref(cls_id));
-                        }
-                        _ => {}
-                    }
-                }
-            }
+    for base in start_class.mro() {
+        if let ClassBase::Class(cls_id) = base
+            && let HeapData::Class(cls) = vm.heap.get(*cls_id)
+            && cls.defined_methods().contains(&func_id)
+        {
+            vm.heap.inc_ref(*cls_id);
+            return Some(Value::Ref(*cls_id));
         }
     }
     None
 }
 
-fn validate_super_type(val: &Value, vm: &VM<'_>) -> RunResult<()> {
+fn is_type_value(val: &Value, vm: &VM<'_>) -> bool {
     match val {
-        Value::Builtin(Builtins::Type(_)) => Ok(()),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_) | HeapData::HostClassType(_)) => Ok(()),
-        _ => {
-            let got = val.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
-            Err(ExcType::type_error(format!(
-                "super() argument 1 must be a type, not {got}"
-            )))
-        }
+        Value::Builtin(Builtins::Type(_) | Builtins::ExcType(_) | Builtins::Function(BuiltinsFunctions::Type)) => true,
+        Value::Ref(id) => matches!(
+            vm.heap.get(*id),
+            HeapData::Class(_) | HeapData::NamedTupleClass(_) | HeapData::HostClassType(_)
+        ),
+        _ => false,
+    }
+}
+
+fn validate_super_type(val: &Value, vm: &VM<'_>) -> RunResult<()> {
+    if is_type_value(val, vm) {
+        Ok(())
+    } else {
+        let got = val.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+        Err(ExcType::type_error(format!(
+            "super() argument 1 must be a type, not {got}"
+        )))
     }
 }
 
@@ -197,10 +201,13 @@ fn type_or_class_name<'i>(val: &Value, vm: &'i VM<'_>) -> Cow<'i, str> {
     match val {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => class_name(*id, vm.heap, vm.interns),
+            HeapData::NamedTupleClass(nt) => Cow::Borrowed(nt.name(vm.interns)),
             HeapData::HostClassType(ty) => Cow::Borrowed(ty.name(vm.interns)),
             _ => val.py_type_name(vm),
         },
         Value::Builtin(Builtins::Type(t)) => t.name(vm.heap, vm.interns),
+        Value::Builtin(Builtins::ExcType(e)) => Cow::Borrowed((*e).into()),
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Cow::Borrowed("type"),
         _ => val.py_type_name(vm),
     }
 }
@@ -212,9 +219,7 @@ fn validate_super_obj(type_arg: &Value, obj_arg: &Value, vm: &mut VM<'_>) -> Run
     if isinstance_check(obj_arg, type_arg, vm)? {
         return Ok(());
     }
-    let is_type_or_class = matches!(obj_arg, Value::Builtin(Builtins::Type(_)))
-        || matches!(obj_arg, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_) | HeapData::HostClassType(_)));
-    if is_type_or_class {
+    if is_type_value(obj_arg, vm) {
         if issubclass_check(obj_arg, type_arg, vm)? {
             return Ok(());
         }
@@ -245,30 +250,55 @@ fn super_mro_lookup(type_arg: &Value, obj_arg: &Value, attr_str: &str, vm: &mut 
         return None;
     };
 
-    let mut full_mro = Vec::with_capacity(1 + self_class.mro().len());
-    full_mro.push(self_class_id);
-    full_mro.extend_from_slice(self_class.mro());
-
-    let target_type_id = match type_arg {
-        Value::Ref(id) => *id,
-        _ => return None,
+    let search_bases = if let Value::Ref(target_id) = type_arg {
+        if *target_id == self_class_id {
+            self_class.mro()
+        } else {
+            let pos = self_class
+                .mro()
+                .iter()
+                .position(|b| matches!(b, ClassBase::Class(id) if id == target_id))?;
+            &self_class.mro()[pos + 1..]
+        }
+    } else if let Value::Builtin(Builtins::ExcType(target_exc)) = type_arg {
+        let pos = self_class
+            .mro()
+            .iter()
+            .position(|b| matches!(b, ClassBase::BuiltinExc(exc) if exc == target_exc))?;
+        &self_class.mro()[pos + 1..]
+    } else if matches!(type_arg, Value::Builtin(Builtins::Type(Type::Object))) {
+        let pos = self_class.mro().iter().position(|b| matches!(b, ClassBase::Object))?;
+        &self_class.mro()[pos + 1..]
+    } else {
+        return None;
     };
 
-    let type_idx = full_mro.iter().position(|&id| id == target_type_id)?;
+    let is_obj_class = matches!(
+        obj_arg,
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_))
+    );
 
-    for &ancestor_id in &full_mro[type_idx + 1..] {
-        if let HeapData::Class(ancestor_cls) = vm.heap.get(ancestor_id)
-            && let Some(member) = ancestor_cls.namespace().get_by_str(attr_str, vm.heap, vm.interns)
-        {
-            let member_val = member.clone_with_heap(vm.heap);
-            if is_method_value(&member_val, vm) {
-                let bound = BoundMethod {
-                    instance: obj_arg.clone_with_heap(vm.heap),
-                    func: member_val,
-                };
-                return Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))));
+    for base in search_bases {
+        match base {
+            ClassBase::Class(ancestor_id) => {
+                if let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
+                    && let Some(member) = ancestor_cls.namespace().get_by_str(attr_str, vm.heap, vm.interns)
+                {
+                    let member_val = member.clone_with_heap(vm.heap);
+                    if attr_str != "__new__"
+                        && (!is_obj_class || attr_str == "__init_subclass__")
+                        && is_method_value(&member_val, vm)
+                    {
+                        let bound = BoundMethod {
+                            instance: obj_arg.clone_with_heap(vm.heap),
+                            func: member_val,
+                        };
+                        return Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))));
+                    }
+                    return Some(member_val);
+                }
             }
-            return Some(member_val);
+            ClassBase::BuiltinExc(_) | ClassBase::Object => {}
         }
     }
 
@@ -364,12 +394,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
             return Ok(Some(CallResult::Value(val)));
         }
 
+        if attr_str == "__new__" {
+            return Ok(Some(CallResult::Value(Value::Builtin(Builtins::Function(
+                BuiltinsFunctions::ObjectNew,
+            )))));
+        }
+
         Err(ExcType::attribute_error("super", attr_str))
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
+
+        if matches!(attr_str, "__thisclass__" | "__self__" | "__self_class__")
+            && let Some(CallResult::Value(val)) = self.py_getattr(attr, vm)?
+        {
+            defer_drop!(val, vm);
+            return vm.call_function(val, args);
+        }
+
         let s = self.get(vm.heap);
+
         let Some(obj) = s.obj_arg.as_ref().map(|o| o.clone_with_heap(vm.heap)) else {
             args.drop_with(vm.heap);
             return Err(ExcType::attribute_error("super", attr_str));
@@ -384,7 +429,42 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
             return vm.call_function(member, args);
         }
 
+        if attr_str == "__new__" {
+            return builtin_object_new(vm, args).map(CallResult::Value);
+        }
+
         if attr_str == "__init__" {
+            let is_exc = match obj {
+                Value::Ref(id) => match vm.heap.get(*id) {
+                    HeapData::Instance(inst) => match vm.heap.get(inst.class()) {
+                        HeapData::Class(cls) => cls.base_exception().is_some(),
+                        _ => false,
+                    },
+                    _ => false,
+                },
+                _ => false,
+            };
+
+            if is_exc {
+                let (pos, kwargs) = args.into_parts();
+                if !kwargs.is_empty() {
+                    pos.drop_with(vm.heap);
+                    kwargs.drop_with(vm.heap);
+                    return Err(ExcType::type_error(
+                        "BaseException.__init__() takes no keyword arguments",
+                    ));
+                }
+                kwargs.drop_with(vm.heap);
+                let pos_vec: Vec<Value> = pos.collect();
+                let args_tuple = allocate_tuple(pos_vec.into(), vm.heap);
+                obj.py_set_attr(
+                    &EitherStr::Interned(vm.interns.intern_static(StaticStrings::Args)),
+                    args_tuple,
+                    vm,
+                )?;
+                return Ok(CallResult::Value(Value::None));
+            }
+
             let pos = args.into_pos_only("object.__init__", vm.heap)?;
             if !pos.as_slice().is_empty() {
                 pos.drop_with(vm.heap);
@@ -396,22 +476,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
         }
 
         if attr_str == "__init_subclass__" {
-            let (pos, kwargs) = args.into_parts();
-            let pos_len = pos.as_slice().len();
-            pos.drop_with(vm.heap);
-            let has_kwargs = !kwargs.is_empty();
-            kwargs.drop_with(vm.heap);
-            let target_name = type_or_class_name(obj, vm);
-            if pos_len > 0 {
-                return Err(ExcType::type_error(format!(
-                    "{target_name}.__init_subclass__() takes no arguments ({pos_len} given)"
-                )));
-            }
-            if has_kwargs {
-                return Err(ExcType::type_error(format!(
-                    "{target_name}.__init_subclass__() takes no keyword arguments"
-                )));
-            }
+            let target_name = type_or_class_name(obj, vm).into_owned();
+            validate_init_subclass_args(&target_name, args, vm.heap)?;
             return Ok(CallResult::Value(Value::None));
         }
 
