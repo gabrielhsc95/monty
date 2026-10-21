@@ -41,7 +41,9 @@ and function-attributes-become-methods), bound methods, class variables
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (ordered; values stringized and provisional, see
-[typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
+[typing.md](typing.md)), `Foo.__bases__`, `Foo.__mro__`, `Foo.mro()`,
+`super()`, `issubclass(cls, classinfo)`, `__init_subclass__`,
+`type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
 [with.md](with.md).
 
@@ -54,10 +56,10 @@ order and error wording, but with these divergences:
     like `int` or `list` cannot be subclassed and raise
     `TypeError: type '<name>' is not an acceptable base type`. Non-types raise
     `TypeError: type.__new__(X): <type> is not a type object`.
-- **Keywords are always rejected.** CPython forwards extra keywords to
-    `__init_subclass__`; Monty has no `__init_subclass__`, but the error
-    message matches what `object.__init_subclass__` produces
-    (`A.__init_subclass__() takes no keyword arguments`).
+- Extra keywords (such as `type("Sub", (Base,), {}, extra="foo")`) are forwarded
+    to the base classes' `__init_subclass__`. If no base defines
+    `__init_subclass__`, passing keywords raises
+    `TypeError: <name>.__init_subclass__() takes no keyword arguments`.
 - Only `__doc__` is synthesized into the namespace when absent (as `None`,
     matching CPython). CPython also sets `__module__`, `__qualname__`,
     `__dict__`, `__weakref__`, etc.; those attributes raise `AttributeError`
@@ -363,20 +365,16 @@ every construction request. Divergences:
 
 ## What does NOT exist for user code
 
-- `super()` is not yet supported.
 - Metaclasses (and metaclass keyword arguments in class definitions) are
     rejected at parse time as not-implemented.
-- Metaclasses, `__init_subclass__`, `__set_name__`, and any other
-    metaclass-driven namespace customization.
+- Metaclasses, `__set_name__`, and other metaclass-driven namespace customization.
 - `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
 - Method decorators — `@classmethod`, `@staticmethod`, `@property`, and any
     decorator on a `def` inside a class body (rejected at parse time). Decorators
     on classes and on non-method functions are supported.
-- **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
-    are all unavailable (`cls.__name__` and `cls.__annotations__` work, the
-    latter with stringized values, see [typing.md](typing.md)). A class decorator
-    can therefore discover fields and nothing else.
+- `__dict__` and `dir()` are unavailable on classes (`cls.__name__`,
+    `cls.__bases__`, `cls.__mro__`, `cls.mro()`, and `cls.__annotations__` work).
 - **Tracebacks from decorator application point at the whole `class` statement**
     (a span from the first decorator through the body, with the body elided as
     `...<N lines>...`), where CPython pins the individual decorator that raised.
