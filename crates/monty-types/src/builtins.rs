@@ -118,4 +118,10 @@ pub enum BuiltinsFunctions {
     Exec,
     /// `locals()`, appended after [`Self::Exec`].
     Locals,
+    /// `issubclass(class, classinfo)`, appended after [`Self::Locals`].
+    Issubclass,
+    /// `object.__new__(cls, *args, **kwargs)`, appended after [`Self::Issubclass`].
+    #[strum(serialize = "object.__new__")]
+    #[serde(rename = "object.__new__")]
+    ObjectNew,
 }

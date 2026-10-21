@@ -12,7 +12,7 @@ use super::{CallFrame, VM, attr::PendingLookupEffect, function_namespace, recurs
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
-    builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt},
+    builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt, object_new},
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -23,7 +23,10 @@ use crate::{
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     resource_checks::check_estimated_size,
-    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
+    types::{
+        Dict, Instance, List, PyTrait, Type, allocate_tuple, bytes::call_bytes_method, instance::class_name,
+        str::call_str_method,
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -383,6 +386,57 @@ impl<'h> VM<'h> {
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
                 t.call_class_method(name_id, args, this)
+            }
+            Value::Builtin(Builtins::ExcType(exc_type)) => {
+                let method = this.interns.get_str(name_id);
+                if method == "mro" {
+                    let type_name: &'static str = exc_type.into();
+                    let pos = args.into_pos_only(&format!("{type_name}.mro"), this.heap)?;
+                    if !pos.as_slice().is_empty() {
+                        let count = pos.as_slice().len();
+                        pos.drop_with(this.heap);
+                        return Err(ExcType::type_error(format!(
+                            "{type_name}.mro() takes no arguments ({count} given)"
+                        )));
+                    }
+                    let mut items = vec![Value::Builtin(Builtins::ExcType(exc_type))];
+                    let mut cur = exc_type.parent();
+                    while let Some(parent) = cur {
+                        items.push(Value::Builtin(Builtins::ExcType(parent)));
+                        cur = parent.parent();
+                    }
+                    items.push(Value::Builtin(Builtins::Type(Type::Object)));
+                    let list_id = this.heap.allocate(HeapData::List(List::new(items)));
+                    Ok(CallResult::Value(Value::Ref(list_id)))
+                } else if method == "__new__" {
+                    object_new::builtin_object_new(this, args).map(CallResult::Value)
+                } else {
+                    let type_name: &'static str = exc_type.into();
+                    args.drop_with(this);
+                    Err(ExcType::attribute_error_type(type_name, method))
+                }
+            }
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                let method = this.interns.get_str(name_id);
+                if method == "mro" {
+                    let pos = args.into_pos_only("type.mro", this.heap)?;
+                    if !pos.as_slice().is_empty() {
+                        let count = pos.as_slice().len();
+                        pos.drop_with(this.heap);
+                        return Err(ExcType::type_error(format!(
+                            "type.mro() takes no arguments ({count} given)"
+                        )));
+                    }
+                    let items = vec![
+                        Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                        Value::Builtin(Builtins::Type(Type::Object)),
+                    ];
+                    let list_id = this.heap.allocate(HeapData::List(List::new(items)));
+                    Ok(CallResult::Value(Value::Ref(list_id)))
+                } else {
+                    args.drop_with(this);
+                    Err(ExcType::attribute_error_type("type", method))
+                }
             }
             _ => {
                 // Non-heap values without method support
@@ -1056,9 +1110,78 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        let custom_new = match self.heap.get(class_id) {
+            HeapData::Class(class) => class.mro_getattr("__new__", self.heap, self.interns),
+            _ => None,
+        };
+        if let Some(new_func) = custom_new {
+            let this = self;
+            defer_drop!(new_func, this);
+            let (args_for_new, args_for_init) = match &args {
+                ArgValues::Empty => (ArgValues::Empty, ArgValues::Empty),
+                _ => (args.clone_with_heap(this.heap), args),
+            };
+            this.heap.inc_ref(class_id);
+            let instance = this.evaluate_function("__new__", new_func, args_for_new.prepend(Value::Ref(class_id)))?;
+            let is_instance_of_cls = match &instance {
+                Value::Ref(inst_id) => match this.heap.get(*inst_id) {
+                    HeapData::Instance(inst) => {
+                        let actual = inst.class();
+                        actual == class_id || {
+                            if let HeapData::Class(c) = this.heap.get(actual) {
+                                c.is_subclass_of(class_id)
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !is_instance_of_cls {
+                args_for_init.drop_with(this);
+                return Ok(CallResult::Value(instance));
+            }
+            let instance_id = instance.into_ref_id().unwrap();
+            let init = match this.heap.get(class_id) {
+                HeapData::Class(class) => class.mro_getattr("__init__", this.heap, this.interns),
+                _ => None,
+            };
+            return match init {
+                None => {
+                    args_for_init.drop_with(this);
+                    Ok(CallResult::Value(Value::Ref(instance_id)))
+                }
+                Some(init_func) => this.dispatch_init(class_id, instance_id, init_func, args_for_init),
+            };
+        }
+
+        let base_exc = match self.heap.get(class_id) {
+            HeapData::Class(class) => class.base_exception(),
+            _ => None,
+        };
+        let mut attrs = Dict::new();
+        if base_exc.is_some() {
+            let pos_items: Vec<Value> = match &args {
+                ArgValues::Empty => vec![],
+                ArgValues::One(v) => vec![v.clone_with_heap(self.heap)],
+                ArgValues::Two(a, b) => vec![a.clone_with_heap(self.heap), b.clone_with_heap(self.heap)],
+                ArgValues::ArgsKargs { args, .. } => args.iter().map(|v| v.clone_with_heap(self.heap)).collect(),
+                ArgValues::Kwargs(_) => vec![],
+            };
+            let args_tuple = allocate_tuple(pos_items.into(), self.heap);
+            attrs = Dict::from_pairs(
+                vec![(
+                    Value::InternString(self.interns.intern_static(StaticStrings::Args)),
+                    args_tuple,
+                )],
+                self,
+            )?;
+        }
         let instance_id = self
             .heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
+            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, attrs))));
         // The instance now owns a reference to its class object.
         self.heap.inc_ref(class_id);
 
@@ -1079,6 +1202,10 @@ impl<'h> VM<'h> {
                 };
                 dataclasses::dataclass_init(self, &class, Value::Ref(instance_id), args)
             }
+            None if base_exc.is_some() => {
+                args.drop_with(self);
+                Ok(CallResult::Value(Value::Ref(instance_id)))
+            }
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             None => {
                 args.drop_with(self);
@@ -1086,57 +1213,65 @@ impl<'h> VM<'h> {
                 Value::Ref(instance_id).drop_with(self);
                 Err(ExcType::type_error(format!("{name}() takes no arguments")))
             }
-            Some(init_func) => {
-                let this = self;
-                defer_drop!(init_func, this);
-                // CPython's `type.__call__` looks up `__init__` with descriptor
-                // binding: only plain functions bind the new instance as `self`.
-                // Bound methods already carry their own receiver, and builtins,
-                // classes and other values are called with the constructor
-                // arguments unchanged.
-                let init_args = if this.is_function_value(init_func) {
-                    this.heap.inc_ref(instance_id);
-                    args.prepend(Value::Ref(instance_id))
-                } else {
-                    args
-                };
-                if this.is_plain_sync_function(init_func) {
-                    // Push the instance as the pending result (transferring the
-                    // allocation's reference), then run __init__ as a real
-                    // (suspendable) frame.
-                    this.push(Value::Ref(instance_id));
-                    match this.call_function(init_func, init_args)? {
-                        CallResult::FramePushed => {
-                            // Mark the just-pushed frame so its return value is
-                            // discarded (after the `None` check in the ReturnValue
-                            // handler) and the pending instance becomes the result.
-                            this.current_frame_mut().is_initializer = true;
-                            Ok(CallResult::FramePushed)
-                        }
-                        other => {
-                            // Defensive: `is_plain_sync_function` guarantees a frame push.
-                            other.drop_with(this);
-                            this.pop().drop_with(this);
-                            Err(ExcType::type_error("__init__() must be a regular function"))
-                        }
-                    }
-                } else {
-                    // Exotic `__init__` (builtin, class, `async def`, non-callable,
-                    // ...): run to completion synchronously — no pending instance is
-                    // pushed — and enforce CPython's `None`-return contract.
-                    match this.evaluate_function("__init__", init_func, init_args) {
-                        Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
-                        Ok(result) => {
-                            let type_name = result.py_type_name(this);
-                            result.drop_with(this);
-                            Value::Ref(instance_id).drop_with(this);
-                            Err(ExcType::type_error_init_return(type_name))
-                        }
-                        Err(e) => {
-                            Value::Ref(instance_id).drop_with(this);
-                            Err(e)
-                        }
-                    }
+            Some(init_func) => self.dispatch_init(class_id, instance_id, init_func, args),
+        }
+    }
+
+    fn dispatch_init(
+        &mut self,
+        _class_id: HeapId,
+        instance_id: HeapId,
+        init_func: Value,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(init_func, this);
+        // CPython's `type.__call__` looks up `__init__` with descriptor
+        // binding: only plain functions bind the new instance as `self`.
+        // Bound methods already carry their own receiver, and builtins,
+        // classes and other values are called with the constructor
+        // arguments unchanged.
+        let init_args = if this.is_function_value(init_func) {
+            this.heap.inc_ref(instance_id);
+            args.prepend(Value::Ref(instance_id))
+        } else {
+            args
+        };
+        if this.is_plain_sync_function(init_func) {
+            // Push the instance as the pending result (transferring the
+            // allocation's reference), then run __init__ as a real
+            // (suspendable) frame.
+            this.push(Value::Ref(instance_id));
+            match this.call_function(init_func, init_args)? {
+                CallResult::FramePushed => {
+                    // Mark the just-pushed frame so its return value is
+                    // discarded (after the `None` check in the ReturnValue
+                    // handler) and the pending instance becomes the result.
+                    this.current_frame_mut().is_initializer = true;
+                    Ok(CallResult::FramePushed)
+                }
+                other => {
+                    // Defensive: `is_plain_sync_function` guarantees a frame push.
+                    other.drop_with(this);
+                    this.pop().drop_with(this);
+                    Err(ExcType::type_error("__init__() must be a regular function"))
+                }
+            }
+        } else {
+            // Exotic `__init__` (builtin, class, `async def`, non-callable,
+            // ...): run to completion synchronously — no pending instance is
+            // pushed — and enforce CPython's `None`-return contract.
+            match this.evaluate_function("__init__", init_func, init_args) {
+                Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
+                Ok(result) => {
+                    let type_name = result.py_type_name(this);
+                    result.drop_with(this);
+                    Value::Ref(instance_id).drop_with(this);
+                    Err(ExcType::type_error_init_return(type_name))
+                }
+                Err(e) => {
+                    Value::Ref(instance_id).drop_with(this);
+                    Err(e)
                 }
             }
         }

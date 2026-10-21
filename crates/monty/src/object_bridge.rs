@@ -776,7 +776,8 @@ impl MontyTypeExt for MontyType {
             | Type::CsvWriter
             | Type::CsvDictReader
             | Type::CsvDictWriter
-            | Type::CsvDialect => return None,
+            | Type::CsvDialect
+            | Type::Super => return None,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,

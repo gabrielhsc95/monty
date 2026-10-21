@@ -1,6 +1,6 @@
 //! Implementation of the isinstance() builtin function.
 
-use super::Builtins;
+use super::{Builtins, BuiltinsFunctions};
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -35,8 +35,29 @@ pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
     match classinfo {
         Value::Builtin(Builtins::Type(t)) => Ok(obj.py_type(vm).is_instance_of(*t)),
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(matches!(
+            obj,
+            Value::Builtin(Builtins::Type(_) | Builtins::ExcType(_) | Builtins::Function(BuiltinsFunctions::Type))
+        ) || matches!(
+            obj,
+            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_) | HeapData::NamedTupleClass(_) | HeapData::HostClassType(_))
+        )),
         Value::Builtin(Builtins::ExcType(handler_type)) => {
-            Ok(matches!(obj.py_type(vm), Type::Exception(exc_type) if exc_type.is_subclass_of(*handler_type)))
+            let matched = match obj.py_type(vm) {
+                Type::Exception(exc_type) => exc_type.is_subclass_of(*handler_type),
+                _ => {
+                    if let Value::Ref(obj_id) = obj
+                        && let HeapData::Instance(inst) = vm.heap.get(*obj_id)
+                        && let HeapData::Class(cls) = vm.heap.get(inst.class())
+                        && let Some(base_exc) = cls.base_exception()
+                    {
+                        base_exc.is_subclass_of(*handler_type)
+                    } else {
+                        false
+                    }
+                }
+            };
+            Ok(matched)
         }
         // A user-defined class: true iff `obj` is an instance of this class or one of its subclasses.
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => Ok(instance_of_class(obj, *id, vm)),

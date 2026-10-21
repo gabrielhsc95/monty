@@ -31,6 +31,7 @@ use smallvec::SmallVec;
 use super::{CmpOrder, PyTrait, tuple::TupleIterator};
 use crate::{
     args::{ArgValues, KwargsValues},
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -932,6 +933,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
                 allocate_string(doc, vm.heap)
             }
             Some(StaticStrings::DunderModule) => self.get(vm.heap).module.clone_with_heap(vm.heap),
+            _ if attr.as_str(vm.interns) == "__bases__" => {
+                let items = vec![Value::Builtin(Builtins::Type(Type::Tuple))];
+                allocate_tuple(items.into(), vm.heap)
+            }
+            _ if attr.as_str(vm.interns) == "__mro__" => {
+                let self_id = self.id();
+                vm.heap.inc_ref(self_id);
+                let items = vec![
+                    Value::Ref(self_id),
+                    Value::Builtin(Builtins::Type(Type::Tuple)),
+                    Value::Builtin(Builtins::Type(Type::Object)),
+                ];
+                allocate_tuple(items.into(), vm.heap)
+            }
+            _ if attr.as_str(vm.interns) == "__class__" => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
             _ => {
                 return Err(ExcType::attribute_error_type(
                     self.get(vm.heap).name.as_str(vm.interns),

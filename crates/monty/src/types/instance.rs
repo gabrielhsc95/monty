@@ -140,6 +140,12 @@ impl<'h> HeapReadMut<'h, Instance> {
     /// Whatever `set_attr` grows must stay above this line (see
     /// `limitations/classes.md`).
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if let Some(text) = name.as_either_str(vm.heap)
+            && matches!(text.as_str(vm.interns), "__class__" | "__bases__")
+        {
+            [name, value].drop_with(vm);
+            return Err(ExcType::type_error("type controls __class__ and __bases__"));
+        }
         self.attrs_mut().set(name, value, vm)
     }
 }
@@ -383,6 +389,32 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             Ok(f.write_str(s.to_str(vm)?)?)
         } else {
             let class_id = instance_class(self_id, vm);
+            if let HeapData::Class(cls) = vm.heap.get(class_id)
+                && cls.base_exception().is_some()
+            {
+                let mut guard = vm.recursion_guard()?;
+                let vm = &mut *guard;
+                let args = instance_attr(self_id, "args", vm).unwrap_or(Value::None);
+                defer_drop!(args, vm);
+                let Some(HeapReadOutput::Tuple(tuple)) = args.read_heap(vm) else {
+                    return Err(ExcType::type_error("exception args must be a tuple"));
+                };
+                let items: Vec<_> = tuple
+                    .get(vm.heap)
+                    .as_slice()
+                    .iter()
+                    .map(|v| v.clone_with_heap(vm.heap))
+                    .collect();
+                defer_drop!(items, vm);
+                write!(f, "{}(", class_name(class_id, vm.heap, vm.interns))?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    item.py_repr_fmt(f, vm, heap_ids)?;
+                }
+                return Ok(f.write_char(')')?);
+            }
             match dataclasses::dataclass_fields(class_id, vm) {
                 Some(field_names) => {
                     heap_ids.insert(self_id);
@@ -413,6 +445,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         let class_id = self.get(vm.heap).class;
         if let Some(member) = class_member(class_id, attr_str, vm) {
             defer_drop!(member, vm);
+            if attr_str == "__new__" {
+                return vm.call_function(member, args);
+            }
             return call_member_bound(member, self.id(), args, vm);
         }
 
@@ -546,17 +581,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         // works inside a user `__exit__`. Monty has no traceback objects, so
         // the third slot is always `None` (see limitations/with.md).
         let (typ, val) = match exc {
-            Some(exc_id) => {
-                let HeapData::Exception(e) = vm.heap.get(exc_id) else {
-                    // Instances only receive `Some(exc)` from `WithExceptStart`,
-                    // which always passes the in-flight exception object
-                    // (explicit `obj.__exit__(...)` calls go through normal
-                    // method dispatch, never this trait hook).
-                    unreachable!("Instance py_exit called with a non-exception heap id");
-                };
-                vm.heap.inc_ref(exc_id);
-                (Value::Builtin(Builtins::ExcType(e.exc_type())), Value::Ref(exc_id))
-            }
+            Some(exc_id) => match vm.heap.get(exc_id) {
+                HeapData::Exception(e) => {
+                    vm.heap.inc_ref(exc_id);
+                    (Value::Builtin(Builtins::ExcType(e.exc_type())), Value::Ref(exc_id))
+                }
+                HeapData::Instance(inst) => {
+                    let cls_id = inst.class();
+                    vm.heap.inc_ref(cls_id);
+                    vm.heap.inc_ref(exc_id);
+                    (Value::Ref(cls_id), Value::Ref(exc_id))
+                }
+                _ => unreachable!("Instance py_exit called with a non-exception heap id"),
+            },
             None => (Value::None, Value::None),
         };
         let args = ArgValues::ArgsKargs {
@@ -657,6 +694,11 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// exactly as `self.field` does, binding a function-valued class member as a
 /// [`BoundMethod`].
 pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
+    let class_id = instance_class(self_id, vm);
+    if attr == "__class__" {
+        vm.heap.inc_ref(class_id);
+        return Some(Value::Ref(class_id));
+    }
     if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
         && let Some(value) = inst
             .get(vm.heap)
@@ -666,10 +708,9 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
     {
         return Some(value);
     }
-    let class_id = instance_class(self_id, vm);
     match class_member(class_id, attr, vm) {
         // A class variable is returned as-is; a function binds `self`.
-        Some(member) if is_method_value(&member, vm) => {
+        Some(member) if attr != "__new__" && is_method_value(&member, vm) => {
             vm.heap.inc_ref(self_id);
             let bound = BoundMethod {
                 instance: Value::Ref(self_id),
@@ -678,13 +719,6 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
             Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
         }
         Some(member) => Some(member),
-        // `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
-        // Last, so an explicit member of the same name wins, mirroring the
-        // `__name__` handling on class objects.
-        None if attr == "__class__" => {
-            vm.heap.inc_ref(class_id);
-            Some(Value::Ref(class_id))
-        }
         None => None,
     }
 }
@@ -701,9 +735,36 @@ pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value
 /// Produces `str(instance)`, dispatching to a user `__str__` if defined, else
 /// falling back to `repr` (which itself falls back to the default).
 pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
-    match instance_call_str_dunder(self_id, "__str__", vm)? {
-        Some(s) => Ok(s),
-        None => instance_repr(self_id, vm),
+    if let Some(s) = instance_call_str_dunder(self_id, "__str__", vm)? {
+        Ok(s)
+    } else {
+        let class_id = instance_class(self_id, vm);
+        if let HeapData::Class(cls) = vm.heap.get(class_id)
+            && let Some(base_exc) = cls.base_exception()
+        {
+            let mut guard = vm.recursion_guard()?;
+            let vm = &mut *guard;
+            let args = instance_attr(self_id, "args", vm).unwrap_or(Value::None);
+            defer_drop!(args, vm);
+            let Some(HeapReadOutput::Tuple(tuple)) = args.read_heap(vm) else {
+                return Err(ExcType::type_error("exception args must be a tuple"));
+            };
+            match tuple.get(vm.heap).as_slice() {
+                [] => Ok(super::str::allocate_string("", vm.heap)),
+                [item] => {
+                    let item = item.clone_with_heap(vm.heap);
+                    defer_drop!(item, vm);
+                    if base_exc == ExcType::KeyError {
+                        item.py_repr(vm)
+                    } else {
+                        item.py_str(vm)
+                    }
+                }
+                _ => args.py_repr(vm),
+            }
+        } else {
+            instance_repr(self_id, vm)
+        }
     }
 }
 
@@ -1036,7 +1097,7 @@ fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut 
 /// Whether a value is a user-defined function (so it should bind `self` when
 /// accessed as a method). Class variables that are not functions are returned
 /// unbound.
-fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
+pub(crate) fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::DefFunction(_) => true,
         Value::Ref(id) => matches!(

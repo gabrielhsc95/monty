@@ -779,11 +779,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Node::ClassDef {
                 name,
                 bases,
+                keywords,
                 body,
                 members,
                 decorators,
                 position,
-            } => self.compile_class_def(name, bases, body, members, decorators, *position)?,
+            } => self.compile_class_def(name, bases, keywords, body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::Match {
                 subject,
@@ -969,10 +970,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// statements in its own scope and returns the assembled `Class`. We emit
     /// that function value, call it with zero args, and bind the result to the
     /// class name.
+    #[expect(clippy::too_many_arguments)]
     fn compile_class_def(
         &mut self,
         name: &Identifier,
         bases: &[SequenceItem],
+        keywords: &[Kwarg],
         body: &PreparedFunctionDef,
         members: &[Identifier],
         decorators: &[ExprLoc],
@@ -984,25 +987,51 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.compile_expr(decorator)?;
         }
 
-        // Arguments for type(name, bases, dict):
-        let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
-        self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+        if keywords.is_empty() {
+            // Fast path: Arguments for type(name, bases, dict):
+            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
 
-        // Evaluate bases in the enclosing scope in source order
-        self.compile_tuple_sequence(bases, position)?;
+            // Evaluate bases in the enclosing scope in source order
+            self.compile_tuple_sequence(bases, position)?;
 
-        // Build the class-body function/closure value on the stack...
-        self.emit_make_class_body(body, members, position)?;
-        // ...call it with zero args — it runs the body and returns the namespace Dict.
-        // Record the class statement as the call site so a traceback from inside
-        // the class body attributes this frame to the `class` statement (like
-        // CPython) rather than falling back to `CodeRange::default()`.
-        self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::CallFunction, 0)?;
+            // Build the class-body function/closure value on the stack...
+            self.emit_make_class_body(body, members, position)?;
+            // ...call it with zero args — it runs the body and returns the namespace Dict.
+            // Record the class statement as the call site so a traceback from inside
+            // the class body attributes this frame to the `class` statement (like
+            // CPython) rather than falling back to `CodeRange::default()`.
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
 
-        // Call the 3-arg type() builtin, which constructs the Class object.
-        self.code.set_location(position, None);
-        self.code.emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+            // Call the 3-arg type() builtin, which constructs the Class object.
+            self.code.set_location(position, None);
+            self.code.emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+        } else {
+            // Stack layout for CallFunctionKw: [callable, pos_0, pos_1, pos_2, kw_val_0, kw_val_1, ...]
+            let type_const = self
+                .code
+                .add_const(Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)))?;
+            self.code.emit_u16(Opcode::LoadConst, type_const)?;
+
+            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+
+            self.compile_tuple_sequence(bases, position)?;
+
+            self.emit_make_class_body(body, members, position)?;
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+            let mut kwname_ids = Vec::with_capacity(keywords.len());
+            for kw in keywords {
+                self.compile_expr(&kw.value)?;
+                kwname_ids.push(check_name_index_u16(kw.key.name_id, position)?);
+            }
+
+            self.code.set_location(position, None);
+            self.code.emit_call_function_kw(3, &kwname_ids)?;
+        }
 
         // Each call consumes the callable below the current value: `deco(value)`.
         // Reversed so the bottom-most (last pushed) applies first, and located at

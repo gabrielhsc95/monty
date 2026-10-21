@@ -1,14 +1,16 @@
 //! Implementation of the type() builtin function.
 
-use super::Builtins;
+use std::mem;
+
+use super::{Builtins, BuiltinsFunctions};
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait, Type},
+    types::{Class, Dict, PyTrait, Type, str::allocate_string},
     value::Value,
 };
 
@@ -81,7 +83,12 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
     } else {
-        Value::Builtin(Builtins::Type(value.py_type(vm)))
+        let t = value.py_type(vm);
+        if t == Type::Type {
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Type))
+        } else {
+            Value::Builtin(Builtins::Type(t))
+        }
     }
 }
 
@@ -105,7 +112,7 @@ fn create_class(
     defer_drop!(name, vm);
     defer_drop!(bases, vm);
     defer_drop!(namespace, vm);
-    defer_drop!(kwargs, vm);
+    defer_drop_mut!(kwargs, vm);
 
     let Some(class_name) = name.as_either_str(vm.heap) else {
         let got = name.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -129,6 +136,8 @@ fn create_class(
     let mut bases_ids = Vec::with_capacity(tuple.as_slice().len());
     let mut base_names = Vec::with_capacity(tuple.as_slice().len());
     let mut seen_object = false;
+    let mut seen_exc_type: Option<ExcType> = None;
+    let mut direct_exc_type: Option<ExcType> = None;
     for base in tuple.as_slice() {
         match base {
             Value::Builtin(Builtins::Type(Type::Object)) => {
@@ -146,15 +155,40 @@ fn create_class(
             }
             Value::Builtin(Builtins::ExcType(exc_type)) => {
                 let type_name: &'static str = (*exc_type).into();
-                return Err(ExcType::type_error(format!(
-                    "type '{type_name}' is not an acceptable base type"
-                )));
+                if let Some(existing) = seen_exc_type {
+                    if existing == *exc_type {
+                        return Err(ExcType::type_error(format!("duplicate base class {type_name}")));
+                    } else if existing.is_subclass_of(*exc_type) {
+                        // existing is more specific, keep it
+                    } else if exc_type.is_subclass_of(existing) {
+                        seen_exc_type = Some(*exc_type);
+                    } else {
+                        return Err(ExcType::type_error("multiple bases have instance lay-out conflict"));
+                    }
+                } else {
+                    seen_exc_type = Some(*exc_type);
+                }
+                direct_exc_type = Some(*exc_type);
+                base_names.push(type_name);
             }
             Value::Ref(id) => {
                 if let HeapData::Class(cls) = vm.heap.get(*id) {
                     let cls_name = cls.name().as_str(vm.interns);
                     if bases_ids.contains(id) {
                         return Err(ExcType::type_error(format!("duplicate base class {cls_name}")));
+                    }
+                    if let Some(parent_exc) = cls.base_exception() {
+                        if let Some(existing) = seen_exc_type {
+                            if existing.is_subclass_of(parent_exc) {
+                                // existing is more specific, keep it
+                            } else if parent_exc.is_subclass_of(existing) {
+                                seen_exc_type = Some(parent_exc);
+                            } else {
+                                return Err(ExcType::type_error("multiple bases have instance lay-out conflict"));
+                            }
+                        } else {
+                            seen_exc_type = Some(parent_exc);
+                        }
                     }
                     bases_ids.push(*id);
                     base_names.push(cls_name);
@@ -197,13 +231,6 @@ fn create_class(
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 3, "dict", got));
     };
 
-    if !kwargs.is_empty() {
-        // CPython forwards extra keywords to `__init_subclass__`, which
-        // `object` rejects with this message — synthesize the equivalent.
-        let name_str = class_name.as_str(vm.interns);
-        return Err(ExcType::type_error_no_kwargs(&format!("{name_str}.__init_subclass__")));
-    }
-
     // Monty divergence: CPython only emits a `RuntimeWarning` for non-string
     // namespace keys; Monty has no warnings machinery, so silently accepting
     // them would hide the mistake — raise instead. Validated before cloning
@@ -229,6 +256,11 @@ fn create_class(
             Value::None,
         ));
     }
+    if source.get_by_str("__eq__", vm.heap, vm.interns).is_some()
+        && source.get_by_str("__hash__", vm.heap, vm.interns).is_none()
+    {
+        pairs.push((allocate_string("__hash__", vm.heap), Value::None));
+    }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
     for &base_id in &bases_ids {
@@ -236,11 +268,51 @@ fn create_class(
     }
 
     let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
-        class_name,
+        class_name.clone(),
         namespace_dict,
         bases_ids,
-        mro,
+        mro.clone(),
+        seen_object,
+        seen_exc_type,
+        direct_exc_type,
     ))));
+
+    // Look for __init_subclass__ in base classes' MRO
+    let mut init_subclass = None;
+    for &base_id in &mro {
+        if let HeapData::Class(base_cls) = vm.heap.get(base_id)
+            && let Some(val) = base_cls
+                .namespace()
+                .get_by_str("__init_subclass__", vm.heap, vm.interns)
+        {
+            init_subclass = Some(val.clone_with_heap(vm.heap));
+            break;
+        }
+    }
+
+    let kwargs = mem::replace(kwargs, KwargsValues::Empty);
+    if let Some(init_subclass_fn) = init_subclass {
+        defer_drop!(init_subclass_fn, vm);
+        vm.heap.inc_ref(class_id);
+        let arg_values = ArgValues::from_parts(vec![Value::Ref(class_id)], kwargs);
+        match vm.evaluate_function("__init_subclass__", init_subclass_fn, arg_values) {
+            Ok(ret) => {
+                ret.drop_with(vm.heap);
+            }
+            Err(e) => {
+                Value::Ref(class_id).drop_with(vm.heap);
+                return Err(e);
+            }
+        }
+    } else if !kwargs.is_empty() {
+        kwargs.drop_with(vm.heap);
+        let name_str = class_name.as_str(vm.interns);
+        Value::Ref(class_id).drop_with(vm.heap);
+        return Err(ExcType::type_error_no_kwargs(&format!("{name_str}.__init_subclass__")));
+    } else {
+        kwargs.drop_with(vm.heap);
+    }
+
     Ok(Value::Ref(class_id))
 }
 

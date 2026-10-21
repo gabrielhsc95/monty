@@ -19,6 +19,8 @@ mod scheduler;
 
 use std::{borrow::Cow, mem};
 
+use crate::defer_drop;
+
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
@@ -548,8 +550,26 @@ impl CallFrame<'_> {
 
     /// Start of this frame's locals region on the VM stack.
     #[inline]
-    pub(super) fn stack_base(&self) -> usize {
+    pub(crate) fn stack_base(&self) -> usize {
         self.stack_base as usize
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn code(&self) -> &Code {
+        self.code
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn locals_count(&self) -> u16 {
+        self.locals_count
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn function_id(&self) -> Option<FunctionId> {
+        self.function_id
     }
 
     /// Start of this frame's entries in the VM-wide `exception_stack`.
@@ -1879,12 +1899,39 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
+                    let exc = if let Value::Ref(id) = &exc
+                        && let HeapData::Class(cls) = self.heap.get(*id)
+                        && cls.base_exception().is_some()
+                    {
+                        let result = {
+                            let this = &mut *self;
+                            defer_drop!(exc, this);
+                            this.evaluate_function("raise", exc, ArgValues::Empty)
+                        };
+                        match result {
+                            Ok(v) => v,
+                            Err(error) => {
+                                catch!(self, error);
+                                continue;
+                            }
+                        }
+                    } else {
+                        exc
+                    };
                     let error = self.make_exception(&exc, true); // is_raise=true, hide caret
                     // Re-raise an instance as-is so `raise e` preserves `e`'s
                     // identity, like CPython. A bare type or non-exception has
                     // nothing to reuse and rebuilds from the error.
                     let raised = match &exc {
                         Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => Some(exc),
+                        Value::Ref(id)
+                            if matches!(
+                                self.heap.get(*id),
+                                HeapData::Instance(inst) if matches!(self.heap.get(inst.class()), HeapData::Class(cls) if cls.base_exception().is_some())
+                            ) =>
+                        {
+                            Some(exc)
+                        }
                         _ => {
                             exc.drop_with(self);
                             None

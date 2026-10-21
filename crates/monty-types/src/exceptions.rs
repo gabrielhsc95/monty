@@ -457,6 +457,50 @@ impl ExcType {
             _ => false,
         }
     }
+
+    /// Returns the immediate parent exception type in the exception hierarchy,
+    /// or `None` for `BaseException` (whose parent is `object`).
+    #[must_use]
+    pub fn parent(self) -> Option<Self> {
+        match self {
+            Self::BaseException => None,
+            Self::Exception | Self::KeyboardInterrupt | Self::SystemExit => Some(Self::BaseException),
+            Self::KeyError | Self::IndexError => Some(Self::LookupError),
+            Self::LookupError => Some(Self::Exception),
+            Self::ZeroDivisionError | Self::OverflowError => Some(Self::ArithmeticError),
+            Self::ArithmeticError => Some(Self::Exception),
+            Self::RecursionError | Self::NotImplementedError => Some(Self::RuntimeError),
+            Self::RuntimeError => Some(Self::Exception),
+            Self::FrozenInstanceError => Some(Self::AttributeError),
+            Self::AttributeError => Some(Self::Exception),
+            Self::UnboundLocalError => Some(Self::NameError),
+            Self::NameError => Some(Self::Exception),
+            Self::UnicodeDecodeError
+            | Self::UnicodeEncodeError
+            | Self::JsonDecodeError
+            | Self::TomlDecodeError
+            | Self::BinasciiError => Some(Self::ValueError),
+            Self::ValueError => Some(Self::Exception),
+            Self::ModuleNotFoundError => Some(Self::ImportError),
+            Self::ImportError => Some(Self::Exception),
+            Self::FileNotFoundError
+            | Self::FileExistsError
+            | Self::IsADirectoryError
+            | Self::NotADirectoryError
+            | Self::PermissionError
+            | Self::TimeoutError
+            | Self::UnsupportedOperation => Some(Self::OSError),
+            Self::OSError => Some(Self::Exception),
+            Self::AssertionError
+            | Self::MemoryError
+            | Self::StopIteration
+            | Self::SyntaxError
+            | Self::TypeError
+            | Self::RePatternError
+            | Self::BinasciiIncomplete
+            | Self::CsvError => Some(Self::Exception),
+        }
+    }
 }
 
 /// Structured payload attached to exception types whose CPython counterparts

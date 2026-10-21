@@ -93,6 +93,8 @@ macro_rules! heap_payloads {
             /// A method bound to an instance.
             #[serde(rename = "M")]
             BoundMethod(inline $crate::types::BoundMethod),
+            /// A `super` proxy object created by `super(...)`.
+            Super(inline $crate::types::Super),
             /// One `dataclasses.Field` held by a class's `__dataclass_fields__` dictionary.
             /// Boxed: a name, an annotation and a default or factory are already
             /// wider than the 32-bit ceiling, and `Field` has attributes left to gain.
@@ -243,6 +245,7 @@ impl HeapData {
             | Self::Class(_)
             | Self::Instance(_)
             | Self::BoundMethod(_)
+            | Self::Super(_)
             | Self::DataclassField(_)
             | Self::ListIterator(_)
             | Self::DequeIterator(_)
@@ -345,6 +348,7 @@ impl HeapData {
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
             Self::BoundMethod(_) => Type::Function,
+            Self::Super(_) => Type::Super,
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassParams(_) => Type::DataclassParams,
             Self::LongInt(_) => Type::Int,
@@ -688,6 +692,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Class($value) => $body,
             Self::Instance($value) => $body,
             Self::BoundMethod($value) => $body,
+            Self::Super($value) => $body,
             Self::DataclassField($value) => $body,
             Self::DataclassParams($value) => $body,
             Self::LongInt($value) => $body,
@@ -1212,6 +1217,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::HashObject(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::Super(_)
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::LongInt(_)

@@ -2018,6 +2018,14 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
+        HeapData::Super(s) => {
+            if let Value::Ref(id) = &s.type_arg {
+                on_child(*id);
+            }
+            if let Some(Value::Ref(id)) = &s.obj_arg {
+                on_child(*id);
+            }
+        }
         HeapData::DataclassField(field) => {
             // A captured default or factory can reach back to the class the
             // field belongs to (`x: object = SomeInstanceOfIt`, or a factory
@@ -2191,6 +2199,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
+        HeapData::Super(s) => s.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
         HeapData::DataclassParams(params) => params.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
