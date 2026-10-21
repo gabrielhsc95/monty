@@ -7,9 +7,9 @@ Python.
 ## Implemented builtin functions
 
 `abs`, `all`, `any`, `bin`, `chr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
-`format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
+`format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `issubclass`, `iter`, `len`,
 `locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
-`reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
+`reversed`, `round`, `setattr`, `sorted`, `sum`, `super`, `type`, `zip`.
 `eval`, `exec` and `locals` are described in [eval_exec.md](eval_exec.md).
 
 ## Implemented type constructors (also builtins)
@@ -25,13 +25,10 @@ These raise `NameError`:
 - **Code objects and imports**: `compile`, `__import__`.
 - **Namespace introspection**: `globals`, `vars`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
-- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
-    `super`. (`@property` on functions is not recognized; use a method.)
+- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`.
+    (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `memoryview`, `ascii`.
-- **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
-
-`super()` is the biggest practical omission: cooperative method calls with `super()`
-are not yet supported (see [classes.md](classes.md)).
+- **Other**: `callable`, `delattr`, `aiter`, `anext`.
 
 ## Behavioural divergences
 

@@ -57,12 +57,10 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 **Missing in other ways:**
 
-- User-defined exception classes.
-    The built-in exception types (`Exception`, `ValueError`, etc.) cannot yet be subclassed.
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
-- `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
+- `compile`, `globals`, and `__import__` — raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
 - Third-party packages.
     There is no `sys.path` and no site-packages.

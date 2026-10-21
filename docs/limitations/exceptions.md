@@ -64,12 +64,19 @@ tracebacks are not preserved across `raise from`.
 
 ## Custom subclasses
 
-User `class` definitions are supported, but built-in exception types cannot yet
-be subclassed (`class Foo(Exception):` raises `TypeError: type 'Exception' is not an acceptable base type`),
-so there is no way to create a new exception class inside the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
-with `TypeError: exceptions must derive from BaseException`. Define custom
-exception types on the host side if needed, or use the built-in subclass
-that best fits.
+Sandboxed code can define custom exception classes by subclassing `Exception`,
+`BaseException`, or any built-in exception type:
+
+```python
+class AppError(Exception):
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
+```
+
+- Inherited constructors populate `self.args` as a tuple matching CPython.
+- Custom exceptions match their own type and ancestor types in `try/except`, `isinstance()`, and `issubclass()`.
+- Raising an object that does not derive from `BaseException` raises `TypeError: exceptions must derive from BaseException`.
 
 ## Control flow in `finally`
 

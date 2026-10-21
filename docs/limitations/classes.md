@@ -52,7 +52,7 @@ and function-attributes-become-methods), bound methods, class variables
 The 3-arg `type()` form creates classes at runtime with CPython's validation
 order and error wording, but with these divergences:
 
-- **`bases` must be user-defined classes or `object`.** Built-in types
+- **`bases` must be user-defined classes, built-in exception types, or `object`.** Other built-in types
     like `int` or `list` cannot be subclassed and raise
     `TypeError: type '<name>' is not an acceptable base type`. Non-types raise
     `TypeError: type.__new__(X): <type> is not a type object`.
@@ -79,11 +79,9 @@ order and error wording, but with these divergences:
     `Foo.__init__() missing ...`.
 - **`type(obj)`** returns the class object (so identity works), but its own
     `repr` is `<class 'Foo'>` with the bare name; CPython qualifies it.
-- **The class object is not itself a `type` instance.** The bare name `type`
-    resolves to the builtin `type` *function*, not a type object, so
-    `type(Foo) is type` is `False` (CPython: `True`) and `isinstance(Foo, type)`
-    raises `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union` (CPython: `True`). There is no
-    metaclass.
+- **Metaclasses are not supported.** `type(Foo) is type` and `isinstance(Foo, type)`
+    return `True`, matching CPython, but custom metaclasses (`class Foo(metaclass=Meta):`)
+    are not supported.
 - **Bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
@@ -125,11 +123,8 @@ order and error wording, but with these divergences:
     where `type.__name__` is a metaclass descriptor whose setter renames the
     class, it does not rename the class, so `Foo.__name__` reads and `repr(Foo)`
     keep the original name while instances see the member.
-- **Assigning `obj.__class__`** stores an ordinary instance attribute rather
-    than reassigning the object's class. `obj.__class__ = X` then reads back `X`,
-    but `type(obj)` and `isinstance` still report the original class, leaving an
-    internally inconsistent object. CPython either reassigns the class (for a
-    compatible class) or raises `TypeError: __class__ must be set to a class, not '...' object`.
+- **Assigning `obj.__class__` raises `TypeError`** (`TypeError: __class__ assignment not supported`).
+    Monty instances have a fixed class identity and do not support dynamic class reassignment.
 - **Recursive/deep `__repr__`/`__str__` raises `RecursionError` earlier than
     CPython.** A `__repr__` (or `__str__`) that reprs `self`, or a deep chain of
     instances whose reprs nest (e.g. a long linked list), re-enters the
@@ -230,7 +225,7 @@ value). Divergences from real CPython objects:
     when the class is registered in the session.
 - **`isinstance(x, Point)` matches by exact class id only**: the host never
     sends bases, so an instance of a subclass is not an instance of `Point` in
-    the sandbox, and `issubclass` does not exist.
+    the sandbox.
 - **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
     sandbox code sets a new attribute, that attribute appears in the repr too —
     CPython's dataclass repr shows declared fields only.
@@ -380,7 +375,7 @@ every construction request. Divergences:
     `...<N lines>...`), where CPython pins the individual decorator that raised.
     Every decorator in a stack reports that same location; only the callee frame
     identifies which one raised.
-- Dunder protocols not dispatched for user-defined instances include `__new__`, `__ne__`, ordering comparisons,
+- Dunder protocols not dispatched for user-defined instances include `__ne__`, ordering comparisons,
     `__bool__`, `__len__`, `__complex__`, `__format__`, and all in-place arithmetic dunders (`__iadd__`, etc.).
     Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,
     except `@=`, which is rejected at compile time.
@@ -438,9 +433,9 @@ every construction request. Divergences:
     `@dataclass(frozen=True)` instance, which it writes to and `obj.x = v`
     refuses — the same escape hatch CPython's generated `__init__` uses. On a
     class object it does not write at all, where `Foo.x = v` sets a class member.
-- Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
-    and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
-    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
+- Introspection attributes other than `__name__`, `__doc__`, `__annotations__`,
+    `Foo.__bases__`, `Foo.__mro__`, `Foo.mro()`, and `obj.__class__`: `Foo.__dict__`,
+    `obj.__dict__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`
@@ -465,17 +460,15 @@ every construction request. Divergences:
 
 ## `object`
 
-The name resolves, but it is a carrier for `object.__setattr__` rather than a
-full type: `isinstance(x, object)` is `True` for every value, as in CPython.
+`isinstance(x, object)` is `True` for every value, as in CPython.
 
 - **`object()` cannot be constructed** — raises `TypeError: cannot create 'object' instances`, where CPython returns a
     featureless instance.
 - **`class Foo(object):` is accepted**, equivalent to `class Foo:`.
-- **Only `__setattr__` and `__name__` resolve.** Every other member CPython's
-    `object` carries — `__doc__`, `__init__`, `__eq__`, `__getattribute__`,
-    `__class__`, `__mro__`, `__bases__`, `__qualname__`, `__module__`,
-    `__dict__` — raises `AttributeError`, with Monty's generic `'type' object has no attribute 'x'` where CPython says
-    `type object 'object' has no attribute 'x'`.
+- **Members on `object`**: `__name__`, `__class__`, `__bases__`, `__mro__`, `mro()`,
+    `__new__`, `__init_subclass__`, and `__setattr__` resolve. Other members CPython's
+    `object` carries (`__doc__`, `__init__`, `__eq__`, `__getattribute__`,
+    `__qualname__`, `__module__`, `__dict__`) raise `AttributeError`.
 - **`object.__setattr__` accepts only instances of sandbox-defined classes.**
     Anything else raises CPython's
     `AttributeError: '<type>' object has no attribute '<name>' and no __dict__ for setting new attributes` — including
