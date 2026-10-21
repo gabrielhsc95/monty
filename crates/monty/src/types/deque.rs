@@ -12,6 +12,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_value::PyValue,
     resource_checks::{check_estimated_size, check_repeat_size, check_value_buffer_growth},
     types::{
         LazyHeapSet, Type,
@@ -244,10 +245,9 @@ fn check_maxlen(n: i64) -> RunResult<usize> {
 /// exception kind the caller supplies (`OverflowError` for maxlen/rotate/insert,
 /// `IndexError` for subscript).
 fn read_ssize(value: &Value, vm: &VM<'_>, overflow: fn() -> RunError) -> Option<RunResult<i64>> {
-    match value {
-        Value::Int(i) => Some(Ok(*i)),
-        Value::Bool(b) => Some(Ok(i64::from(*b))),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(li.to_i64().ok_or_else(overflow)),
+    match value.py_value(vm) {
+        PyValue::Int(integer) => Some(integer.to_i64(vm).ok_or_else(overflow)),
+        PyValue::Bool(value) => Some(Ok(i64::from(value))),
         _ => None,
     }
 }
@@ -416,13 +416,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         }
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let deque_id = self.id();
         let iterator = vm
             .heap
             .allocate(HeapData::DequeIterator(DequeIterator::new(deque_id, vm)));
         vm.heap.inc_ref(deque_id);
-        Ok(Value::Ref(iterator))
+        Ok(CallResult::Value(Value::Ref(iterator)))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -725,8 +725,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1060,7 +1060,7 @@ pub(crate) fn deque_extend<'h>(
         }
         Ok(())
     } else {
-        let iter = iterable.into_py_iter(vm)?;
+        let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
         // One-shot preflight from the size hint: exact-hint iterators (e.g.

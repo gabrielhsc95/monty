@@ -4,7 +4,7 @@ use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs},
-    builtins::{Builtins, BuiltinsFunctions, object_setattr::builtin_object_setattr},
+    builtins::{Builtins, BuiltinsFunctions, iter::builtin_iter, object_setattr::builtin_object_setattr},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -16,6 +16,7 @@ use crate::{
         itertools,
         itertools::ItertoolsFunctions,
     },
+    py_value::PyValue,
     types::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
         Str, TimeZone, Tuple,
@@ -294,6 +295,10 @@ pub enum Type {
     /// reads `<class 'random.Random'>`.
     #[strum(serialize = "random.Random")]
     Random,
+    /// The wrapper returned by caching decorators. Monty exposes this type
+    /// through `type(f)`, but not as a `functools` module attribute.
+    #[strum(serialize = "functools._lru_cache_wrapper")]
+    LruCacheWrapper,
     /// The OpenSSL-backed `hashlib` hash object, `_hashlib.HASH`.
     #[strum(serialize = "_hashlib.HASH")]
     HashlibHash,
@@ -479,6 +484,15 @@ impl Type {
                 // The one `itertools` type CPython gives a
                 // `__class_getitem__`; the rest reject a subscript.
                 | Self::ItertoolsChain
+        )
+    }
+
+    /// Whether multiplication can fall back to CPython's sequence-repetition protocol.
+    #[must_use]
+    pub(crate) const fn has_sequence_repeat(self) -> bool {
+        matches!(
+            self,
+            Self::Str | Self::Bytes | Self::List | Self::Tuple | Self::NamedTuple | Self::Deque
         )
     }
 
@@ -841,9 +855,17 @@ impl Type {
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).
     ///
-    /// Dispatches to the appropriate type's init method for container types,
-    /// or handles primitive type conversions inline.
-    pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    /// Iterator acquisition may suspend in user code; other constructors complete natively.
+    pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        if self == Self::Iterator {
+            builtin_iter(vm, args)
+        } else {
+            self.call_native(vm, args).map(CallResult::Value)
+        }
+    }
+
+    /// Dispatches constructors which do not yield, including primitive conversions.
+    fn call_native(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         match self {
             // Container types - delegate to init methods
             Self::List => List::init(vm, args),
@@ -863,7 +885,6 @@ impl Type {
             Self::Time => time::init(vm, args),
             Self::TimeDelta => timedelta::init(vm, args),
             Self::TimeZone => TimeZone::init(vm, args),
-            Self::Iterator => super::iter::init(vm, args),
             Self::Path => Path::init(vm, args),
             Self::Partial => Partial::init(vm, args),
             Self::Random => Random::init(vm, args),
@@ -1060,15 +1081,9 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     } else if let Some(value) = x.py_index_impl(vm)? {
         Ok(value)
     } else {
-        let interns = vm.interns;
-        match x {
-            Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), 10, vm.heap),
-            Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), 10, vm.heap),
-            Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                HeapData::Str(s) => parse_int_from_str(s.as_str(), 10, vm.heap),
-                HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), 10, vm.heap),
-                _ => Err(ExcType::type_error_int_conversion(&x.py_type_name(vm))),
-            },
+        match x.py_value(vm) {
+            PyValue::Str(value) => parse_int_from_str(value.as_str(vm), 10, vm.heap),
+            PyValue::Bytes(value) => parse_int_from_bytes(value.as_slice(vm), 10, vm.heap),
             _ => Err(ExcType::type_error_int_conversion(&x.py_type_name(vm))),
         }
     }

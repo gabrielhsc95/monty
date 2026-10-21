@@ -2,17 +2,6 @@ use std::{borrow::Cow, cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 
-/// Trait for heap-allocated Python values that need common operations.
-///
-/// This trait abstracts over container types (List, Tuple, Str, Bytes) stored
-/// in the heap, providing a unified interface for operations like length,
-/// equality, reference counting support, and attribute dispatch.
-///
-/// The lifetime `'h` ties methods to the heap lifetime so that
-/// `HeapObjectRead<'h, T>` types can implement the trait with access to the `VM<'h, …>`.
-///
-/// The trait is designed to work with `enum_dispatch` for efficient virtual
-/// dispatch on `HeapData` without boxing overhead.
 use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
@@ -109,16 +98,11 @@ impl PyObjectIdentity for Value {
     }
 }
 
-/// Common operations for Python values.
+/// Common operations for Python values, with `'h` tying heap handles to their VM.
 ///
-/// Implementers should provide Python-compatible semantics for all operations.
-/// Dynamic heap calls are forwarded exhaustively through [`HeapReadOutput`]
-/// without boxing.
-///
-/// Methods take the concrete [`VM`]/`Heap` types, which own the resource
-/// tracker enforcing time/memory/recursion limits. The lifetime `'h` connects
-/// [`HeapObjectRead`] implementations to the VM's heap reference; immediate
-/// [`Value`] implementations use it only through the VM argument.
+/// [`PyValue`](crate::py_value::PyValue) unifies storage representations
+/// for migrated protocols; other operations still dispatch through [`Value`].
+/// [`HeapReadOutput`] retains exhaustive forwarding for unmigrated heap protocols.
 pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
@@ -724,21 +708,19 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Whether `next()` can drive this object, the counterpart to
     /// [`py_is_iterable`](PyTrait::py_is_iterable)'s "can `iter()` be called".
     ///
-    /// Mirrors CPython's `PyIter_Check`, used by `PyObject_GetIter` to reject an
-    /// `__iter__` returning a non-iterator — the one caller here, in
-    /// `Instance::py_iter`. A type overriding `py_next` MUST return `true`, or
-    /// a user `__iter__` returning it is wrongly rejected.
+    /// Rejects a user `__iter__` returning a non-iterator, like CPython's `PyIter_Check`.
+    /// A type overriding `py_next` must return `true` or its instances will be rejected.
     fn py_is_iterator(&self, _vm: &VM<'h>) -> bool {
         false
     }
 
-    /// Returns a Python iterator for this object (`__iter__`).
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    /// Invokes `__iter__`; use `Value::py_iter` to also validate a user method's eventual result.
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
     }
 
-    /// Advances this object using Python's iterator protocol (`__next__`).
-    ///
+    /// Advances an iterator synchronously for Rust consumers.
+    /// Public `next()` dispatches user methods separately so they can suspend.
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
     }
