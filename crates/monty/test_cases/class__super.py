@@ -172,3 +172,38 @@ try:
     super(X, y).nonexistent_attr
 except AttributeError as e:
     print(e)
+
+
+# Follow-up: explicit and zero-argument super() preserve the instance receiver.
+class SuperReceiverParent:
+    def __init__(self, value):
+        self.value = value
+
+    def read(self):
+        return self.value
+
+
+class SuperReceiverChild(SuperReceiverParent):
+    def __init__(self, value):
+        super().__init__(value + 1)
+
+    def read(self):
+        return super().read() * 2
+
+    def explicit_read(self):
+        return super(SuperReceiverChild, self).read()
+
+
+class SuperReceiverGrandchild(SuperReceiverChild):
+    def read(self):
+        return super().read() + 10
+
+
+child_rec = SuperReceiverChild(3)
+grandchild_rec = SuperReceiverGrandchild(3)
+assert child_rec.read() == 8
+assert child_rec.explicit_read() == 4
+assert grandchild_rec.read() == 18
+assert grandchild_rec.explicit_read() == 4
+assert super(SuperReceiverGrandchild, grandchild_rec).read() == 8
+assert super(SuperReceiverChild, grandchild_rec).read() == 4

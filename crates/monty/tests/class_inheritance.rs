@@ -120,30 +120,6 @@ else:
 }
 
 #[test]
-fn inherited_member_lookup_matches_examples() {
-    run(include_str!("../test_cases/class__inheritance_basic.py"));
-    run(include_str!("../test_cases/class__inheritance_lookup.py"));
-    run(include_str!("../test_cases/class__inheritance_mutation.py"));
-}
-
-#[test]
-fn inherited_instance_checks_match_examples() {
-    run(include_str!("../test_cases/class__inheritance_isinstance.py"));
-    run(include_str!("../test_cases/class__inheritance_dynamic.py"));
-    run(include_str!("../test_cases/class__inheritance_redefinition.py"));
-}
-
-#[test]
-fn inherited_special_methods_match_examples() {
-    run(include_str!("../test_cases/class__inheritance_dunders.py"));
-}
-
-#[test]
-fn subclass_checks_match_examples() {
-    run(include_str!("../test_cases/class__inheritance_type_checks.py"));
-}
-
-#[test]
 fn deeply_nested_subclass_checks_respect_recursion_limits() {
     let code = r"
 class Parent: pass
@@ -422,7 +398,7 @@ class Child(Parent):
     pass
 
 obj = Child()
-for target in [Parent, Child, obj]:
+for target in [Parent, Child]:
     for name in ['__class__', '__bases__']:
         try:
             setattr(target, name, Parent)
@@ -430,6 +406,16 @@ for target in [Parent, Child, obj]:
             pass
         else:
             assert False
+
+try:
+    setattr(obj, '__class__', Parent)
+except TypeError:
+    pass
+else:
+    assert False
+
+obj.__bases__ = Parent
+assert obj.__bases__ is Parent
 
 try:
     object.__setattr__(obj, '__class__', Parent)
@@ -1329,4 +1315,161 @@ isinstance(1, t)
     assert!(result.is_err(), "should exceed time limit in isinstance");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+#[test]
+fn custom_exception_super_init_and_args() {
+    run(r#"
+class AppError(Exception):
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
+
+err = AppError("bad request", 400)
+assert err.args == ("bad request",)
+assert err.code == 400
+
+try:
+    AppError(message="bad", code=400)
+except TypeError:
+    pass
+
+class EmptyError(Exception):
+    pass
+
+try:
+    EmptyError(code=123)
+except TypeError:
+    pass
+else:
+    assert False
+"#);
+}
+
+#[test]
+fn custom_exception_formatting_and_identity() {
+    let code = "class MyError(Exception): pass\nraise MyError('failed')";
+    let res = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![]);
+    assert!(res.is_err());
+    let exc = res.unwrap_err();
+    assert_eq!(exc.custom_type_name(), Some("MyError"));
+    assert_eq!(exc.message(), Some("failed"));
+    assert!(exc.to_string().contains("MyError: failed"));
+
+    let code_none = "class MyError(Exception): pass\nraise MyError()";
+    let res_none = MontyRun::new(code_none.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![]);
+    assert!(res_none.is_err());
+    let exc_none = res_none.unwrap_err();
+    assert_eq!(exc_none.custom_type_name(), Some("MyError"));
+    assert_eq!(exc_none.message(), None);
+    assert!(exc_none.to_string().ends_with("MyError"));
+}
+
+#[test]
+fn custom_exception_repr_cycle_detection() {
+    run(r#"
+class MyError(Exception):
+    pass
+
+e = MyError()
+e.args = (e,)
+assert repr(e) == "MyError(...)"
+"#);
+}
+
+#[test]
+fn super_new_and_unbound_super() {
+    run(r#"
+class A:
+    def __new__(cls):
+        return super().__new__(cls)
+
+a = A()
+assert isinstance(a, A)
+
+class Parent:
+    def __new__(cls, val):
+        obj = super().__new__(cls)
+        obj.val = val
+        return obj
+
+class Child(Parent):
+    def __new__(cls, val):
+        return super().__new__(cls, val * 2)
+
+c = Child(5)
+assert c.val == 10
+
+s = super(Child, None)
+assert repr(s) == "<super: <class 'Child'>, NULL>"
+assert s.__self__ is None
+assert s.__self_class__ is None
+assert s.__thisclass__ is Child
+
+class Root:
+    def f(self):
+        return 42
+
+class Base(Root):
+    pass
+
+class Sub(Base):
+    pass
+
+unbound = super(Base, Sub).f
+sub_obj = Sub()
+assert unbound(sub_obj) == 42
+"#);
+}
+
+#[test]
+fn inconsistent_mro_and_exception_bases_order() {
+    run(r"
+class MyValErr(ValueError):
+    pass
+
+try:
+    class Bad(ValueError, MyValErr):
+        pass
+except TypeError:
+    pass
+else:
+    assert False
+
+class Mixin:
+    pass
+
+class Combined(ValueError, Mixin):
+    pass
+
+assert Combined.__bases__ == (ValueError, Mixin)
+assert Combined.__mro__[0] is Combined
+assert Combined.__mro__[1] is ValueError
+assert Combined.__mro__[-2] is Mixin
+assert Combined.__mro__[-1] is object
+");
+}
+
+#[test]
+fn instance_bases_reassignment_and_super_cell_spoofing() {
+    run(r"
+class Foo:
+    pass
+
+f = Foo()
+f.__bases__ = 42
+assert f.__bases__ == 42
+
+class MethodSpoof:
+    def f(self):
+        __class__ = 42
+        return super()
+
+s = MethodSpoof().f()
+assert s.__thisclass__ is MethodSpoof
+");
 }
