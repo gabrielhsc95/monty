@@ -55,7 +55,10 @@ order and error wording, but with these divergences:
 - **`bases` must be user-defined classes, built-in exception types, or `object`.** Other built-in types
     like `int` or `list` cannot be subclassed and raise
     `TypeError: type '<name>' is not an acceptable base type`. Non-types raise
-    `TypeError: type.__new__(X): <type> is not a type object`.
+    `TypeError: type.__new__(X): <type> is not a type object`. Non-conflicting built-in exception
+    types (such as `KeyError` and `AttributeError`) may be combined in multiple inheritance, while
+    conflicting built-in layouts (such as `OSError` with `SyntaxError` or `SystemExit`) raise
+    `TypeError: multiple bases have instance lay-out conflict`.
 - Extra keywords (such as `type("Sub", (Base,), {}, extra="foo")`) are forwarded
     to the base classes' `__init_subclass__`. If no base defines
     `__init_subclass__`, passing keywords raises
@@ -111,6 +114,24 @@ order and error wording, but with these divergences:
     `__trunc__`, binary numeric dunders (including reflected forms), `__getitem__` and `__setitem__` run synchronously.
     An external or OS call raises `NotImplementedError` rather than yielding to the host.
     `__call__` uses the ordinary suspendable call path.
+- **`__new__` and `__init_subclass__` cannot suspend**: like `__repr__`/`__str__`,
+    they run to completion synchronously via `evaluate_function`, so calling an
+    external function or OS call from inside `__new__` or `__init_subclass__` raises
+    `NotImplementedError` rather than suspending to the host.
+- **Protocol dunders on `super()` do not fall back to `object`.** When attribute
+    lookup on a `super()` object misses in all user-defined base classes, only
+    `__init__`, `__new__`, and `__init_subclass__` dispatch to `object`. Built-in
+    protocol methods (`__repr__`, `__str__`, `__eq__`, `__hash__`) raise
+    `AttributeError` rather than falling back to `object`'s implementations.
+- **Zero-argument `super()` in dynamic class factories skips re-applied mixin levels.**
+    Monty identifies the defining class of a zero-argument `super()` call at runtime
+    by matching `FunctionId` against class namespaces rather than capturing an
+    implicit `__class__` cell closure. When a class factory dynamically generates
+    multiple classes sharing the same function body (e.g. `add_one(add_one(A))`), the
+    method resolves to the earlier class, bypassing the intermediate subclass.
+- **Dataclass inheritance does not inherit fields**: subclassing a `@dataclass`
+    only discovers fields declared directly on the subclass body; ancestor fields
+    are not included in the synthesized `__init__` or `__dataclass_fields__`.
 - **Ordering dunders are still not dispatched**; see the entry above.
     Instances are always truthy (no `__bool__`/`__len__` dispatch).
 - **Bound methods compare and hash by identity**: each `obj.method` access

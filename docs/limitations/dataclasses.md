@@ -153,10 +153,14 @@ field after a defaulted one
 
 ## Inheritance
 
-- **Subclassing dataclasses is not yet supported.** Monty constructs dataclass
+- **Field inheritance across dataclasses is not supported.** Monty constructs dataclass
     instances by binding fields directly off `__dataclass_fields__` without synthesizing
-    bytecode `__init__` methods. Inheriting from a `@dataclass` without defining an
-    explicit `__init__` in the child class raises `TypeError: <Subclass>() takes no arguments`.
+    bytecode `__init__` methods:
+    - Subclassing with `@dataclass` (e.g. `@dataclass class Child(Parent): y: int`) only
+        includes fields declared directly on the child class; parent fields are omitted from
+        the synthesized constructor and `__dataclass_fields__`.
+    - Plain inheritance from a `@dataclass` without defining an explicit `__init__`
+        raises `TypeError: <Subclass>() takes no arguments`.
 
 ## Architectural gaps (cannot match)
 
