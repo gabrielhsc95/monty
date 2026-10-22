@@ -256,12 +256,16 @@ fn create_class(
     }
 
     let mut inherited_methods = ahash::AHashSet::new();
-    for (i, base) in mro.iter().enumerate() {
-        vm.heap.tracker.check_time_every(i)?;
+    let mut method_idx = 0;
+    for base in &mro {
         if let ClassBase::Class(ancestor_id) = base
             && let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
         {
-            inherited_methods.extend(ancestor_cls.defined_methods().iter().copied());
+            for &fid in ancestor_cls.defined_methods() {
+                vm.heap.tracker.check_time_every(method_idx)?;
+                method_idx += 1;
+                inherited_methods.insert(fid);
+            }
         }
     }
 
@@ -287,13 +291,15 @@ fn create_class(
     }
 
     // Copy the namespace (CPython semantics: the class owns an independent
-    // dict). `clone_with_heap` takes `&Heap`, so the pairs can be cloned
-    // while `source` still borrows the heap immutably.
+    // dict). Check the deadline once beforehand so that building the cloned
+    // pairs cannot exit early and leak cloned heap references.
+    vm.heap.tracker.check_time()?;
     let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(source.len() + 2);
-    for (i, (k, v)) in source.iter().enumerate() {
-        vm.heap.tracker.check_time_every(i)?;
-        pairs.push((k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)));
-    }
+    pairs.extend(
+        source
+            .iter()
+            .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap))),
+    );
     if source.get_by_str("__doc__", vm.heap, vm.interns).is_none() {
         pairs.push((
             Value::InternString(vm.interns.intern_static(StaticStrings::DunderDoc)),
@@ -333,8 +339,7 @@ fn create_class(
 
     // Look for __init_subclass__ in base classes' MRO
     let mut init_subclass = None;
-    for (i, base) in mro.iter().enumerate() {
-        vm.heap.tracker.check_time_every(i)?;
+    for base in &mro {
         if let ClassBase::Class(base_id) = base
             && let HeapData::Class(base_cls) = vm.heap.get(*base_id)
             && let Some(val) = base_cls
