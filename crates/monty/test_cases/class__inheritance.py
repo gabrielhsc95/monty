@@ -283,11 +283,14 @@ def test_user_class_named_object():
     class object:
         custom = True
 
-    class SubCustomObj(object, ObjA):
+    class CustomBase:
+        x = 1
+
+    class SubCustomObj(object, CustomBase):
         pass
 
     assert SubCustomObj.custom is True
-    assert SubCustomObj.x == 1 if hasattr(SubCustomObj, 'x') else True
+    assert SubCustomObj.x == 1
 
 
 test_user_class_named_object()

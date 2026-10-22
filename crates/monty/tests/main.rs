@@ -621,8 +621,8 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
     "#);
 }
 
-/// The 3-arg `type()` form rejects non-class bases (like built-in types)
-/// because Monty user classes cannot inherit from builtins (documented in `limitations/classes.md`).
+/// The 3-arg `type()` form rejects non-exception built-in bases (like `int`)
+/// because Monty user classes cannot inherit from standard builtins (documented in `limitations/classes.md`).
 #[test]
 fn dynamic_type_with_builtin_base_raises_type_error() {
     let code = "type('A', (int,), {})";

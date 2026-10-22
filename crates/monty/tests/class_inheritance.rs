@@ -10,6 +10,14 @@ fn run(code: &str) {
         .unwrap();
 }
 
+fn run_err(code: &str, expected: &str) {
+    let err = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![])
+        .unwrap_err();
+    assert!(err.to_string().contains(expected), "actual error: {err}");
+}
+
 #[test]
 fn parent_evaluates_once_before_class_body() {
     run(r"
@@ -642,6 +650,8 @@ try:
     s_unbound.some_attr
 except AttributeError as e:
     assert "'super' object has no attribute 'some_attr'" in str(e)
+else:
+    assert False
 
 s_bound = super(Y, y)
 assert repr(s_bound) == "<super: <class 'Y'>, <Y object>>"
@@ -1102,7 +1112,7 @@ try:
     object.__new__(int)
     assert False, "expected TypeError"
 except TypeError as e:
-    assert "object.__new__(X): X is not a type object" in str(e)
+    assert "object.__new__(int) is not safe, use int.__new__()" in str(e)
 
 # Calling object.__new__ on non-type
 try:
@@ -1357,10 +1367,16 @@ err = AppError("bad request", 400)
 assert err.args == ("bad request",)
 assert err.code == 400
 
+err2 = AppError(message="bad", code=400)
+assert err2.args == ("bad",)
+assert err2.code == 400
+
 try:
-    AppError(message="bad", code=400)
+    AppError("bad", 400, unknown=1)
 except TypeError:
     pass
+else:
+    assert False
 
 class EmptyError(Exception):
     pass
@@ -1667,4 +1683,197 @@ else:
 
 assert "should_not_run" not in log
 "#);
+}
+
+#[test]
+fn custom_new_subclass_init_and_dataclass_and_exception_args() {
+    run(r#"
+# 1. __new__ returning subclass instance runs subclass __init__
+class Base:
+    def __new__(cls, which):
+        if which == "sub":
+            return object.__new__(Sub)
+        return object.__new__(cls)
+
+class Sub(Base):
+    def __init__(self, which):
+        self.ran_sub_init = True
+
+obj = Base("sub")
+assert isinstance(obj, Sub)
+assert getattr(obj, "ran_sub_init", False) is True
+
+# 2. Dataclass with __new__ runs dataclass field binding
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int
+    y: int
+    def __new__(cls, x, y):
+        return object.__new__(cls)
+
+p = Point(10, 20)
+assert p.x == 10
+assert p.y == 20
+
+# 3. Custom exception __new__ sets args and rejects kwargs
+class CustomExc(ValueError):
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls)
+
+e = CustomExc("hello", 42)
+assert e.args == ("hello", 42)
+assert isinstance(e, ValueError)
+
+try:
+    CustomExc("hello", bad_kw=1)
+except TypeError as err:
+    assert "takes no keyword arguments" in str(err)
+else:
+    assert False
+"#);
+}
+
+#[test]
+fn namedtuple_mro_and_class_custom_mro_and_init_subclass() {
+    run(r#"
+from collections import namedtuple
+
+Point = namedtuple("Point", ["x", "y"])
+assert Point.__mro__ == (Point, tuple, object)
+assert Point.mro() == [Point, tuple, object]
+
+# User-defined mro() is not shadowed
+class CustomMro:
+    def mro():
+        return "custom_mro"
+
+assert CustomMro.mro() == "custom_mro"
+
+# Foo.__init_subclass__() direct call receives cls
+class HookBase:
+    captured = None
+    def __init_subclass__(cls):
+        HookBase.captured = cls
+
+HookBase.__init_subclass__()
+assert HookBase.captured is HookBase
+"#);
+}
+
+#[test]
+fn exception_types_name_bases_mro_and_subtype_check() {
+    assert_eq!(
+        ExcType::UnsupportedOperation.direct_bases(),
+        &[ExcType::OSError, ExcType::ValueError]
+    );
+    assert_eq!(
+        ExcType::UnsupportedOperation.mro(),
+        vec![
+            ExcType::UnsupportedOperation,
+            ExcType::OSError,
+            ExcType::ValueError,
+            ExcType::Exception,
+            ExcType::BaseException,
+        ]
+    );
+
+    run(r#"
+import json
+
+assert json.JSONDecodeError.__name__ == "JSONDecodeError"
+assert json.JSONDecodeError.__bases__ == (ValueError,)
+assert json.JSONDecodeError.__mro__ == (json.JSONDecodeError, ValueError, Exception, BaseException, object)
+assert json.JSONDecodeError.mro() == [json.JSONDecodeError, ValueError, Exception, BaseException, object]
+
+try:
+    ValueError.__new__(TypeError)
+except TypeError as e:
+    assert "ValueError.__new__(TypeError): TypeError is not a subtype of ValueError" in str(e)
+else:
+    assert False
+
+class MyVal(ValueError):
+    pass
+
+inst = ValueError.__new__(MyVal)
+assert type(inst) is MyVal
+"#);
+}
+
+#[test]
+fn isinstance_tuple_with_type_and_exception() {
+    run(r"
+assert isinstance(int, (type,))
+assert isinstance(int, (int, (type,)))
+assert isinstance(int, int | type)
+
+class CustomErr(Exception):
+    pass
+
+err = CustomErr()
+assert isinstance(err, (Exception,))
+assert isinstance(err, (ValueError, (Exception,)))
+assert isinstance(err, ValueError | Exception)
+");
+}
+
+#[test]
+fn object_new_builtin_safe_errors() {
+    run(r#"
+try:
+    object.__new__(int)
+except TypeError as e:
+    assert "object.__new__(int) is not safe, use int.__new__()" in str(e)
+else:
+    assert False
+
+try:
+    object.__new__(type)
+except TypeError as e:
+    assert "object.__new__(type) is not safe, use type.__new__()" in str(e)
+else:
+    assert False
+"#);
+}
+
+#[test]
+fn datetime_and_collections_bases_and_mro() {
+    run(r"
+from datetime import datetime, date
+from collections import defaultdict, Counter
+
+assert datetime.__bases__ == (date,)
+assert datetime.__mro__ == (datetime, date, object)
+assert datetime.mro() == [datetime, date, object]
+assert issubclass(datetime, date)
+
+assert defaultdict.__bases__ == (dict,)
+assert defaultdict.__mro__ == (defaultdict, dict, object)
+assert defaultdict.mro() == [defaultdict, dict, object]
+assert issubclass(defaultdict, dict)
+
+assert Counter.__bases__ == (dict,)
+assert Counter.__mro__ == (Counter, dict, object)
+assert Counter.mro() == [Counter, dict, object]
+assert issubclass(Counter, dict)
+");
+}
+
+#[test]
+fn bare_raise_traceback_location() {
+    run_err(
+        r"
+class CustomErr(Exception):
+    def __init__(self):
+        pass
+
+def f():
+    raise CustomErr
+
+f()
+",
+        "File \"test.py\", line 7, in f\n    raise CustomErr\nCustomErr",
+    );
 }
