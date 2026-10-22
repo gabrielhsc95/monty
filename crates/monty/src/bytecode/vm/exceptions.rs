@@ -710,7 +710,9 @@ fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>)
     match exc_val {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Exception(e) => {
-                e.exc_type() == raise.exc.exc_type() && e.custom_type_name() == raise.exc.custom_type_name()
+                e.exc_type() == raise.exc.exc_type()
+                    && e.custom_type_name() == raise.exc.custom_type_name()
+                    && e.arg() == raise.exc.arg()
             }
             HeapData::Instance(inst) => {
                 if let HeapData::Class(cls) = vm.heap.get(inst.class()) {
