@@ -1604,3 +1604,45 @@ else:
     assert False
 "#);
 }
+
+#[test]
+fn class_keyword_arguments_evaluated_before_class_body() {
+    run(r#"
+log = []
+
+def track(x):
+    log.append(x)
+    return x
+
+def fail():
+    track("fail")
+    raise ValueError("boom")
+
+class Base:
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__()
+        cls.saved_kwargs = kwargs
+
+class C1(Base, k=track("kw")):
+    _ = track("body")
+
+assert log == ["kw", "body"]
+assert C1.saved_kwargs == {"k": "kw"}
+
+class C2(Base, a=track("kw_a"), b=track("kw_b")):
+    _ = track("body_2")
+
+assert log == ["kw", "body", "kw_a", "kw_b", "body_2"]
+assert C2.saved_kwargs == {"a": "kw_a", "b": "kw_b"}
+
+try:
+    class C3(Base, k=fail()):
+        _ = track("should_not_run")
+except ValueError as e:
+    assert str(e) == "boom"
+else:
+    assert False
+
+assert "should_not_run" not in log
+"#);
+}

@@ -1019,15 +1019,25 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
             self.compile_tuple_sequence(bases, position)?;
 
-            self.emit_make_class_body(body, members, position)?;
-            self.code.set_location(position, None);
-            self.code.emit_u8(Opcode::CallFunction, 0)?;
-
+            // Evaluate keyword arguments in the enclosing scope in source order before class body
             let mut kwname_ids = Vec::with_capacity(keywords.len());
             for kw in keywords {
                 self.compile_expr(&kw.value)?;
                 kwname_ids.push(check_name_index_u16(kw.key.name_id, position)?);
             }
+
+            self.emit_make_class_body(body, members, position)?;
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+            // Move the class namespace dict beneath the keyword arguments on the stack
+            let kw_count = u8::try_from(keywords.len()).map_err(|_| {
+                CompileError::new(
+                    "too many keyword arguments in class definition",
+                    position,
+                )
+            })?;
+            self.code.emit_u8(Opcode::SinkTop, kw_count)?;
 
             self.code.set_location(position, None);
             self.code.emit_call_function_kw(3, &kwname_ids)?;
