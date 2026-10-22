@@ -159,11 +159,10 @@ field after a defaulted one
     - Subclassing with `@dataclass` (e.g. `@dataclass class Child(Parent): y: int`) only
         includes fields declared directly on the child class; parent fields are omitted from
         the synthesized constructor and `__dataclass_fields__`.
-    - Plain inheritance from a `@dataclass` without defining an explicit `__init__`
+    - Plain inheritance from a `@dataclass` without the `@dataclass` decorator (and without defining an explicit `__init__`)
         raises `TypeError: <Subclass>() takes no arguments`.
 
 ## Architectural gaps (cannot match)
 
-- **Dataclass inheritance** — field inheritance across base dataclasses is
-    not yet supported.
+- **Dataclass inheritance** — see [above](#inheritance).
 - **`slots=True` / `weakref_slot=True`** — no `__slots__`, no weakrefs.

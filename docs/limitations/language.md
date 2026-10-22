@@ -10,9 +10,10 @@ any code runs.
 - **`class` definitions** — classes are supported (single and multiple
     inheritance with C3 MRO, instance methods, `__init__`/`__repr__`/`__str__`,
     and class variables of arbitrary expressions). Rejected at parse time:
-    metaclasses (`class Foo(metaclass=...):`) and class-body statements other
-    than `def`, a simple `name [: T] = <expr>` assignment, `pass`, or a
-    docstring. See [classes.md](classes.md).
+    metaclasses (`class Foo(metaclass=...):`), keyword unpacking
+    (`class Foo(**kwargs):`), and class-body statements other than `def`,
+    a simple `name [: T] = <expr>` assignment, `pass`, or a docstring.
+    See [classes.md](classes.md).
 - **Decorators** (`@deco`) — supported on classes and on top-level or nested
     `def`/`async def`, taking any callable in scope, evaluated in the enclosing
     scope and applied bottom-up. Rejected at parse time on **methods**, so

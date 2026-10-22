@@ -46,7 +46,7 @@ too, rather than something that type-checks and then fails at runtime.
 
 `del d[i]` fails at *compile* time (the `del` statement is unimplemented Monty-wide,
 see [language.md](language.md)), and subclassing (`class Q(deque)`) fails at runtime
-because built-in types cannot be subclassed (see [classes.md](classes.md)).
+because built-in types (other than supported exception classes) cannot be subclassed (see [classes.md](classes.md)).
 
 ## `namedtuple`
 

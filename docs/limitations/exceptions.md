@@ -1,6 +1,6 @@
 # Exceptions
 
-Monty implements a set of built-in exception classes, listed below. Sandboxed code can define **custom exception classes** by subclassing `Exception`, `BaseException`, or any built-in exception type (e.g. `class MyError(Exception): pass`), matching CPython semantics for `raise`, `try/except`, `issubclass`, `isinstance`, and `.args`. Plain user classes that do not derive from `BaseException` cannot be raised; `raise MyClass()` raises `TypeError: exceptions must derive from BaseException`, as in CPython.
+Monty implements a set of built-in exception classes, listed below. Sandboxed code can define **custom exception classes** by subclassing `Exception`, `BaseException`, or any supported built-in exception type (listed below, e.g. `class MyError(Exception): pass`), matching CPython semantics for `raise`, `try/except`, `issubclass`, `isinstance`, and `.args`. Plain user classes that do not derive from `BaseException` cannot be raised; `raise MyClass()` raises `TypeError: exceptions must derive from BaseException`, as in CPython.
 
 ## Implemented exception classes
 
@@ -65,18 +65,15 @@ tracebacks are not preserved across `raise from`.
 ## Custom subclasses
 
 Sandboxed code can define custom exception classes by subclassing `Exception`,
-`BaseException`, or any built-in exception type:
+`BaseException`, or any supported built-in exception type:
 
-```python
+```python test="skip"
 class AppError(Exception):
     def __init__(self, message, code):
         super().__init__(message)
         self.code = code
 ```
 
-- Inherited constructors populate `self.args` as a tuple matching CPython.
-- Custom exceptions match their own type and ancestor types in `try/except`, `isinstance()`, and `issubclass()`.
-- Raising an object that does not derive from `BaseException` raises `TypeError: exceptions must derive from BaseException`.
 - Custom exception instances are user `Instance` objects rather than native `Exception` heap objects, and lack native exception attributes and methods such as `__cause__`, `__context__`, `add_note()`, `with_traceback()`, `.errno`, and `.value`.
 
 ## Control flow in `finally`

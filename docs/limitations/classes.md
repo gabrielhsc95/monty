@@ -124,10 +124,10 @@ order and error wording, but with these divergences:
     protocol methods (`__repr__`, `__str__`, `__eq__`, `__hash__`) raise
     `AttributeError` rather than falling back to `object`'s implementations.
 - **Zero-argument `super()` in dynamic class factories skips re-applied mixin levels.**
-    Monty identifies the defining class of a zero-argument `super()` call at runtime
-    by matching `FunctionId` against class namespaces rather than capturing an
-    implicit `__class__` cell closure. When a class factory dynamically generates
-    multiple classes sharing the same function body (e.g. `add_one(add_one(A))`), the
+    Monty identifies the defining class of a zero-argument `super()` call by inspecting
+    the `__class__` cell closure or falling back to matching `FunctionId` against class
+    namespaces. When a class factory dynamically generates multiple classes sharing the same
+    function body without an implicit `__class__` cell (e.g. `add_one(add_one(A))`), the
     method resolves to the earlier class, bypassing the intermediate subclass.
 - **Dataclass inheritance does not inherit fields**: subclassing a `@dataclass`
     only discovers fields declared directly on the subclass body; ancestor fields

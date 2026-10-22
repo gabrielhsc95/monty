@@ -14,9 +14,11 @@ Python.
 
 ## Implemented type constructors (also builtins)
 
-`bool`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
+`bool`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `object`, `range`,
 `set`, `slice`, `str`, `tuple`. Exception classes (`ValueError`,
 `TypeError`, etc.) are also names in the builtin namespace.
+`object` serves as the universal base class and namespace for `object.__new__` and
+`object.__setattr__` (calling `object()` directly creates a new empty instance).
 
 ## Builtins that are NOT implemented
 
