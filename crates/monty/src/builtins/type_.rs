@@ -260,14 +260,37 @@ fn create_class(
 
     let mut defined_methods = Vec::new();
     for (_, val) in source {
-        match val {
-            Value::DefFunction(fid) => defined_methods.push(*fid),
+        let fid = match val {
+            Value::DefFunction(fid) => Some(*fid),
             Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Closure(c) => defined_methods.push(c.func_id),
-                HeapData::FunctionDefaults(d) => defined_methods.push(d.func_id),
-                _ => {}
+                HeapData::Closure(c) => Some(c.func_id),
+                HeapData::FunctionDefaults(d) => Some(d.func_id),
+                _ => None,
             },
-            _ => {}
+            _ => None,
+        };
+        if let Some(fid) = fid {
+            let is_inherited = c3_bases.iter().any(|base| {
+                if let ClassBase::Class(base_id) = base
+                    && let HeapData::Class(base_cls) = vm.heap.get(*base_id)
+                {
+                    base_cls.defined_methods().contains(&fid)
+                        || base_cls.mro().iter().any(|b| {
+                            if let ClassBase::Class(ancestor_id) = b
+                                && let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
+                            {
+                                ancestor_cls.defined_methods().contains(&fid)
+                            } else {
+                                false
+                            }
+                        })
+                } else {
+                    false
+                }
+            });
+            if !is_inherited {
+                defined_methods.push(fid);
+            }
         }
     }
 
