@@ -1118,9 +1118,9 @@ impl<'h> VM<'h> {
                         _ => false,
                     };
                     if has_kwargs {
+                        let name = class_name(actual_class, this.heap, this.interns);
                         args_for_init.drop_with(this);
                         Value::Ref(instance_id).drop_with(this);
-                        let name = class_name(actual_class, this.heap, this.interns);
                         return Err(ExcType::type_error(format!("{name}() takes no keyword arguments")));
                     }
                     let pos_items: Vec<Value> = match &args_for_init {

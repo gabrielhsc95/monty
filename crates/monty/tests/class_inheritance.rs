@@ -1991,6 +1991,17 @@ E(x=1)
     );
 
     run_err(
+        r"
+class E2(Exception):
+    def __new__(cls, *args, **kwargs):
+        dyn = type('DynExc', (cls,), {})
+        return object.__new__(dyn)
+E2(x=1)
+",
+        "DynExc() takes no keyword arguments",
+    );
+
+    run_err(
         "object.__new__(int)",
         "object.__new__(int) is not safe, use int.__new__()",
     );
@@ -2018,9 +2029,9 @@ assert b.f() == 'A'
 s = super(B, b)
 assert repr(s).startswith('<super: <class \'B\'>, <B object>>')
 assert not (s == 123)
-assert hash(s) is not None
-assert type(s) is not None
-assert type(b.f) is not None
+assert hash(s) == hash(s)
+assert type(s) is super
+assert type(b.f).__name__ == 'function'
 
 class Base: pass
 class Derived(Base): pass
@@ -2029,11 +2040,13 @@ assert repr(s_cls).startswith('<super: <class \'Base\'>, <Derived object>>')
 
 try:
     for x in s: pass
+    assert False, 'iterating super should raise TypeError'
 except TypeError:
     pass
 
 try:
     for x in ValueError(): pass
+    assert False, 'iterating exception should raise TypeError'
 except TypeError:
     pass
 
@@ -2096,16 +2109,19 @@ type('Conflict', (E1, E2), {})
 ",
         "multiple bases have instance lay-out conflict",
     );
-    run_err(
-        "type('C1', (SyntaxError, KeyboardInterrupt), {})",
-        "multiple bases have instance lay-out conflict",
-    );
+    run(r"
+from json import JSONDecodeError
+c1 = type('C1', (SyntaxError, KeyboardInterrupt), {})
+assert issubclass(c1, SyntaxError) and issubclass(c1, KeyboardInterrupt)
+c3 = type('C3', (SyntaxError, JSONDecodeError), {})
+assert issubclass(c3, SyntaxError) and issubclass(c3, JSONDecodeError)
+");
     run_err(
         "type('C2', (SyntaxError, UnicodeDecodeError), {})",
         "multiple bases have instance lay-out conflict",
     );
     run_err(
-        "from json import JSONDecodeError\ntype('C3', (SyntaxError, JSONDecodeError), {})",
+        "type('C4', (SyntaxError, OSError), {})",
         "multiple bases have instance lay-out conflict",
     );
 

@@ -820,7 +820,7 @@ pub enum Node<F> {
     /// variables are `Assign`s. Class decorators and single/multiple inheritance
     /// are supported (see [`bases`](Self::ClassDef::bases) and
     /// [`decorators`](Self::ClassDef::decorators)); metaclasses and decorators on
-    /// a `def` — including `classmethod`/`staticmethod`/`property` — are
+    /// methods — including `classmethod`/`staticmethod`/`property` — are
     /// rejected at parse time. See `limitations/classes.md`.
     ClassDef {
         /// The class name identifier (resolved to an enclosing-scope slot at prepare time).

@@ -44,7 +44,7 @@ it is included in a dump, as is the session's `random_start`.
     to the host produces `unstable::MontyNode::Repr` in Rust and a string in Python.
     Return the generated values or `rng.getstate()` instead.
 - **No `SystemRandom`**, and `random.Random` cannot be subclassed (built-in types other
-    than supported exceptions cannot be subclassed, see [classes.md](classes.md)).
+    than `object` and supported exceptions cannot be subclassed, see [classes.md](classes.md)).
     `random.Random.VERSION` on the class raises `AttributeError`; on an instance it is `3`.
     Reading an instance's `gauss_next` raises `AttributeError: 'Random' object has no attribute 'gauss_next'`.
 - **Copying an unseeded generator gives two independent streams.** `copy.copy(rng)` and `copy.deepcopy(rng)` rebuild

@@ -453,10 +453,8 @@ fn compute_c3_mro(bases: &[ClassBase], base_names: &[&str], heap: &Heap) -> RunR
 fn exception_layout_root(exc: ExcType) -> Option<ExcType> {
     match exc {
         ExcType::SystemExit => Some(ExcType::SystemExit),
-        ExcType::KeyboardInterrupt => Some(ExcType::KeyboardInterrupt),
         ExcType::SyntaxError => Some(ExcType::SyntaxError),
         ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => Some(ExcType::UnicodeDecodeError),
-        ExcType::JsonDecodeError => Some(ExcType::JsonDecodeError),
         ExcType::OSError
         | ExcType::FileNotFoundError
         | ExcType::FileExistsError

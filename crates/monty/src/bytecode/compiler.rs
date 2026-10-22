@@ -968,9 +968,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// to a synthetic zero-arg function (via
     /// [`emit_make_class_body`](Self::emit_make_class_body)) that runs the class
     /// statements in its own scope and returns the namespace `Dict`. We evaluate
-    /// kwargs and bases, call the class body function, build the `Class` object,
-    /// invoke `__init_subclass__`, apply decorators, and bind the result to the
-    /// class name.
+    /// decorator expressions, evaluate kwargs and bases, call the class body
+    /// function, build the `Class` object, invoke `__init_subclass__`, apply
+    /// decorators, and bind the result to the class name.
     #[expect(clippy::too_many_arguments)]
     fn compile_class_def(
         &mut self,
