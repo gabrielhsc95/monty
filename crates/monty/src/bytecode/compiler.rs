@@ -1031,12 +1031,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.emit_u8(Opcode::CallFunction, 0)?;
 
             // Move the class namespace dict beneath the keyword arguments on the stack
-            let kw_count = u8::try_from(keywords.len()).map_err(|_| {
-                CompileError::new(
-                    "too many keyword arguments in class definition",
-                    position,
-                )
-            })?;
+            let kw_count = u8::try_from(keywords.len())
+                .map_err(|_| CompileError::new("too many keyword arguments in class definition", position))?;
             self.code.emit_u8(Opcode::SinkTop, kw_count)?;
 
             self.code.set_location(position, None);
