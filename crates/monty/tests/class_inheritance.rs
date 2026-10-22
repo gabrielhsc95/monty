@@ -1877,3 +1877,289 @@ f()
         "File \"test.py\", line 7, in f\n    raise CustomErr\nCustomErr",
     );
 }
+
+#[test]
+fn builtins_type_and_exception_introspection_coverage() {
+    run(r"
+assert ValueError.__name__ == 'ValueError'
+assert ValueError.__class__ == type
+assert ValueError.__bases__ == (Exception,)
+assert BaseException.__bases__ == (object,)
+assert ValueError.__mro__ == (ValueError, Exception, BaseException, object)
+assert ValueError.__new__ is not None
+
+assert type.__name__ == 'type'
+assert type.__class__ == type
+assert type.__bases__ == (object,)
+assert type.__mro__ == (type, object)
+assert type.mro() == [type, object]
+
+assert type(type) == type
+assert type(ValueError) == type
+
+from collections import namedtuple
+Point = namedtuple('Point', ['x', 'y'])
+assert Point.__mro__ == (Point, tuple, object)
+assert Point.__class__ == type
+
+assert issubclass(type, type)
+assert not issubclass(ValueError, int)
+assert not issubclass(int, tuple)
+
+assert issubclass(RecursionError, RuntimeError)
+assert issubclass(NotImplementedError, RuntimeError)
+assert issubclass(FrozenInstanceError, AttributeError)
+assert issubclass(UnboundLocalError, NameError)
+assert issubclass(ModuleNotFoundError, ImportError)
+assert issubclass(TimeoutError, OSError)
+assert issubclass(PermissionError, OSError)
+
+class MyCustom: pass
+assert not issubclass(int, MyCustom)
+assert not issubclass(MyCustom, int)
+");
+
+    run_err(
+        "ValueError.nonexistent_attr",
+        "type object 'ValueError' has no attribute 'nonexistent_attr'",
+    );
+    run_err(
+        "type.nonexistent_attr",
+        "type object 'type' has no attribute 'nonexistent_attr'",
+    );
+    run_err(
+        "type.mro(1)",
+        "type.mro() takes no arguments (1 given)",
+    );
+    run_err(
+        "ValueError.__new__(TypeError)",
+        "ValueError.__new__(TypeError): TypeError is not a subtype of ValueError",
+    );
+    run_err(
+        "ValueError.__new__()",
+        "ValueError.__new__(): not enough arguments",
+    );
+    run_err(
+        "from collections import namedtuple\nPoint = namedtuple('Point', ['x', 'y'])\nPoint.nonexistent_attr",
+        "type object 'Point' has no attribute 'nonexistent_attr'",
+    );
+    run_err(
+        "issubclass(int, 2)",
+        "issubclass() arg 2 must be a class, a tuple of classes, or a union",
+    );
+}
+
+#[test]
+fn custom_new_and_args_coverage() {
+    run(r"
+class C:
+    def __new__(cls, *args, **kwargs):
+        inst = object.__new__(cls)
+        inst.args = args
+        inst.kwargs = kwargs
+        return inst
+
+c1 = C(1, 2)
+assert c1.args == (1, 2)
+c2 = C(x=10)
+assert c2.kwargs == {'x': 10}
+c3 = C(1, x=20)
+assert c3.args == (1,) and c3.kwargs == {'x': 20}
+c4 = C(**{'a': 1, 'b': 2})
+assert c4.kwargs == {'a': 1, 'b': 2}
+
+from dataclasses import dataclass
+@dataclass
+class D:
+    val: int
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+d = D(42)
+assert d.val == 42
+
+class E(Exception):
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+e = E('hello', 100)
+assert e.args == ('hello', 100)
+");
+
+    run_err(
+        r"
+class E(Exception):
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+E(x=1)
+",
+        "E() takes no keyword arguments",
+    );
+
+    run_err(
+        "object.__new__(int)",
+        "object.__new__(int) is not safe, use int.__new__()",
+    );
+    run_err(
+        "object.__new__(type)",
+        "object.__new__(type) is not safe, use type.__new__()",
+    );
+    run_err(
+        "class A: pass\nobject.__new__(A, 1, 2)",
+        "object.__new__() takes exactly one argument",
+    );
+}
+
+#[test]
+fn super_edge_cases_coverage() {
+    run(r"
+class A:
+    def f(self): return 'A'
+
+class B(A):
+    def f(self): return super().f()
+
+b = B()
+assert b.f() == 'A'
+s = super(B, b)
+assert repr(s).startswith('<super: <class \'B\'>, <B object>>')
+assert not (s == 123)
+assert hash(s) is not None
+assert type(s) is not None
+assert type(b.f) is not None
+
+class Base: pass
+class Derived(Base): pass
+s_cls = super(Base, Derived)
+assert repr(s_cls).startswith('<super: <class \'Base\'>, <Derived object>>')
+
+try:
+    for x in s: pass
+except TypeError:
+    pass
+
+try:
+    for x in ValueError(): pass
+except TypeError:
+    pass
+
+class CycleExc(Exception): pass
+c_exc = CycleExc()
+c_exc.args = (c_exc,)
+assert repr(c_exc) == 'CycleExc(...)'
+");
+
+    run_err(
+        "class CycleExc(Exception): pass\nc = CycleExc()\nc.args = 'not a tuple'\nrepr(c)",
+        "exception args must be a tuple",
+    );
+
+    run_err(
+        "class A: pass\nclass B: pass\nsuper(A, B)",
+        "super(type, obj): obj (type B) is not an instance or subtype of type (A).",
+    );
+    run_err(
+        "class A: pass\nclass B: pass\nsuper(A, B())",
+        "super(type, obj): obj (instance of B) is not an instance or subtype of type (A).",
+    );
+    run_err(
+        "class A: pass\nlen(super(A, A()))",
+        "'super' has no len()",
+    );
+    run_err(
+        r"
+class MyExc(Exception):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+MyExc(x=1)
+",
+        "BaseException.__init__() takes no keyword arguments",
+    );
+    run_err(
+        r"
+class A:
+    def __init__(self, x):
+        super().__init__(x)
+A(1)
+",
+        "object.__init__() takes exactly one argument",
+    );
+    run_err(
+        r"
+class A:
+    def f(self):
+        super().nonexistent()
+A().f()
+",
+        "'super' object has no attribute 'nonexistent'",
+    );
+}
+
+#[test]
+fn type_new_conflicts_and_exception_matching_coverage() {
+    run_err(
+        r"
+class E1(SyntaxError): pass
+class E2(OSError): pass
+type('Conflict', (E1, E2), {})
+",
+        "multiple bases have instance lay-out conflict",
+    );
+    run_err(
+        "type('C1', (SyntaxError, KeyboardInterrupt), {})",
+        "multiple bases have instance lay-out conflict",
+    );
+    run_err(
+        "type('C2', (SyntaxError, UnicodeDecodeError), {})",
+        "multiple bases have instance lay-out conflict",
+    );
+    run_err(
+        "from json import JSONDecodeError\ntype('C3', (SyntaxError, JSONDecodeError), {})",
+        "multiple bases have instance lay-out conflict",
+    );
+
+    run(r"
+class CustomExc(Exception): pass
+
+handled = False
+try:
+    raise ValueError('test')
+except CustomExc:
+    assert False
+except ValueError:
+    handled = True
+assert handled
+");
+}
+
+#[test]
+fn class_keyword_walrus_and_base_unpacking_coverage() {
+    run(r"
+class BaseHook:
+    def __init_subclass__(cls, **kwargs):
+        cls.saved_kwargs = kwargs
+
+# Walrus in class keyword argument
+class MyClass(BaseHook, k=(x := 10)):
+    pass
+
+assert x == 10
+assert MyClass.saved_kwargs == {'k': 10}
+
+# Class capturing outer local in keyword
+def outer():
+    y = 20
+    class Inner(BaseHook, k=y):
+        pass
+    return Inner
+
+assert outer().saved_kwargs == {'k': 20}
+
+# Base class unpacking
+bases = (object,)
+class UnpackedBase(*bases):
+    pass
+
+assert issubclass(UnpackedBase, object)
+");
+}
