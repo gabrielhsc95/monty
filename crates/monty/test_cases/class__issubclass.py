@@ -82,6 +82,7 @@ assert issubclass(Derived, (Other, Base))
 assert not issubclass(Derived, (Other, int))
 assert issubclass(Bottom, (int, (str, (Left,))))
 assert not issubclass(Bottom, (int, (str, bytes)))
+assert not issubclass(1, ())
 
 # Unions
 assert issubclass(Derived, Base | Other)
