@@ -804,6 +804,10 @@ pub struct VM<'h> {
     /// This allows us to find the correct exception handler when an error occurs.
     instruction_ip: usize,
 
+    /// In-flight exception value currently unwinding across a synchronous
+    /// frame boundary (such as `evaluate_function`).
+    unwinding_exception: Option<Value>,
+
     /// Scheduler for task management and call ID allocation.
     ///
     /// Always present — owns `next_call_id` (used by both sync and async paths)
@@ -907,6 +911,7 @@ impl<'h> VM<'h> {
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
+            unwinding_exception: None,
             scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable
             module_code: &program.module_code,
@@ -977,6 +982,7 @@ impl<'h> VM<'h> {
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
+            unwinding_exception: None,
             scheduler: snapshot.scheduler,
             module_code: &program.module_code,
             ext_function_load_ip: None,
@@ -2484,9 +2490,19 @@ impl<'h> VM<'h> {
         }
     }
 
+    /// Drops any in-flight unwinding exception preserved across synchronous boundaries.
+    pub(crate) fn clear_unwinding_exception(&mut self) {
+        if let Some(exc) = self.unwinding_exception.take() {
+            exc.drop_with(self.heap);
+        }
+    }
+
     /// Drops the current task's operand and exception stacks and discards its frames.
     /// Leaves a parked frame until another task is activated, or the VM is dropped.
     pub(super) fn cleanup_current_task(&mut self) {
+        if let Some(exc) = self.unwinding_exception.take() {
+            exc.drop_with(self.heap);
+        }
         self.stack.drain(..).drop_with(self.heap);
         self.exception_stack.drain(..).drop_with(self.heap);
         for frame in self.suspended_frames.drain(..) {
@@ -2946,6 +2962,9 @@ impl ContainsHeap for VM<'_> {
 /// `take_globals`) are harmlessly drained as empty.
 impl Drop for VM<'_> {
     fn drop(&mut self) {
+        if let Some(exc) = self.unwinding_exception.take() {
+            exc.drop_with(self.heap);
+        }
         release_pending_effect(self.pending_effect.take(), self.heap);
         self.pending_lookup_effect.take().drop_with(self.heap);
         self.cleanup_current_task();

@@ -334,11 +334,27 @@ impl VM<'_> {
             if let Some(raised) = raised {
                 raised.drop_with(self);
             }
+            if let Some(exc) = self.unwinding_exception.take() {
+                exc.drop_with(self);
+            }
             return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error));
         }
 
         let exc_value = if let Some(raised) = raised {
+            if let Some(old) = self.unwinding_exception.take() {
+                old.drop_with(self);
+            }
             raised
+        } else if let Some(unwinding) = self.unwinding_exception.take() {
+            if exception_value_matches_error(&unwinding, &error, self) {
+                unwinding
+            } else {
+                unwinding.drop_with(self);
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("terminal errors returned above")
+                };
+                self.create_exception_value(exc)
+            }
         } else {
             // Nothing to reuse: build it from `error`, borrowed rather than
             // cloned since it is a local and so cannot alias `self`.
@@ -461,6 +477,10 @@ impl VM<'_> {
             }
             if should_return {
                 format_unhandled_custom_exception(&mut error, &mut exc_guard);
+                let (exc_value, this) = exc_guard.into_parts();
+                if let Some(old) = this.unwinding_exception.replace(exc_value) {
+                    old.drop_with(this);
+                }
                 return ExceptionHandlingResult::Unhandled(error);
             }
         }
@@ -680,5 +700,31 @@ fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropG
                 raise.exc.set_arg(Some(s.to_owned()));
             }
         }
+    }
+}
+
+fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>) -> bool {
+    let RunError::Exc(raise) = error else {
+        return false;
+    };
+    match exc_val {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Exception(e) => {
+                e.exc_type() == raise.exc.exc_type() && e.custom_type_name() == raise.exc.custom_type_name()
+            }
+            HeapData::Instance(inst) => {
+                if let HeapData::Class(cls) = vm.heap.get(inst.class())
+                    && let Some(base_exc) = cls.base_exception()
+                {
+                    base_exc == raise.exc.exc_type()
+                        && (raise.exc.custom_type_name().is_none()
+                            || raise.exc.custom_type_name() == Some(cls.name().as_str(vm.interns)))
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }
