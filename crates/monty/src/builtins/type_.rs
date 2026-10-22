@@ -143,7 +143,7 @@ fn create_class(
     let mut bases = Vec::with_capacity(tuple.as_slice().len());
     let mut base_names = Vec::with_capacity(tuple.as_slice().len());
     let mut seen_object = false;
-    let mut seen_exc_type: Option<ExcType> = None;
+    let mut seen_layout_root: Option<ExcType> = None;
     for base in tuple.as_slice() {
         match base {
             Value::Builtin(Builtins::Type(Type::Object)) => {
@@ -165,18 +165,14 @@ fn create_class(
                 if bases.contains(&ClassBase::BuiltinExc(*exc_type)) {
                     return Err(ExcType::type_error(format!("duplicate base class {type_name}")));
                 }
-                if let Some(existing) = seen_exc_type {
-                    if existing == *exc_type {
-                        return Err(ExcType::type_error(format!("duplicate base class {type_name}")));
-                    } else if existing.is_subclass_of(*exc_type) {
-                        // existing is more specific, keep it
-                    } else if exc_type.is_subclass_of(existing) {
-                        seen_exc_type = Some(*exc_type);
+                if let Some(layout_root) = exception_layout_root(*exc_type) {
+                    if let Some(existing) = seen_layout_root {
+                        if existing != layout_root {
+                            return Err(ExcType::type_error("multiple bases have instance lay-out conflict"));
+                        }
                     } else {
-                        return Err(ExcType::type_error("multiple bases have instance lay-out conflict"));
+                        seen_layout_root = Some(layout_root);
                     }
-                } else {
-                    seen_exc_type = Some(*exc_type);
                 }
                 bases.push(ClassBase::BuiltinExc(*exc_type));
                 base_names.push(type_name);
@@ -187,17 +183,15 @@ fn create_class(
                     if bases.contains(&ClassBase::Class(*id)) {
                         return Err(ExcType::type_error(format!("duplicate base class {cls_name}")));
                     }
-                    if let Some(parent_exc) = cls.base_exception() {
-                        if let Some(existing) = seen_exc_type {
-                            if existing.is_subclass_of(parent_exc) {
-                                // existing is more specific, keep it
-                            } else if parent_exc.is_subclass_of(existing) {
-                                seen_exc_type = Some(parent_exc);
-                            } else {
+                    if let Some(parent_exc) = cls.base_exception()
+                        && let Some(layout_root) = exception_layout_root(parent_exc)
+                    {
+                        if let Some(existing) = seen_layout_root {
+                            if existing != layout_root {
                                 return Err(ExcType::type_error("multiple bases have instance lay-out conflict"));
                             }
                         } else {
-                            seen_exc_type = Some(parent_exc);
+                            seen_layout_root = Some(layout_root);
                         }
                     }
                     bases.push(ClassBase::Class(*id));
@@ -448,4 +442,29 @@ fn compute_c3_mro(bases: &[ClassBase], base_names: &[&str], heap: &Heap) -> RunR
     }
 
     Ok(result)
+}
+
+/// Returns the layout root for built-in exceptions that have custom instance layouts in CPython.
+///
+/// Standard exceptions (such as `KeyError`, `AttributeError`, `ValueError`, `TypeError`,
+/// `LookupError`, `ArithmeticError`, `Exception`, etc.) share the common `BaseException` layout
+/// and do not conflict with each other or with specialized types unless two conflicting
+/// specialized layouts are combined (e.g. `OSError` with `SyntaxError` or `SystemExit`).
+fn exception_layout_root(exc: ExcType) -> Option<ExcType> {
+    match exc {
+        ExcType::SystemExit => Some(ExcType::SystemExit),
+        ExcType::KeyboardInterrupt => Some(ExcType::KeyboardInterrupt),
+        ExcType::SyntaxError => Some(ExcType::SyntaxError),
+        ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => Some(ExcType::UnicodeDecodeError),
+        ExcType::JsonDecodeError => Some(ExcType::JsonDecodeError),
+        ExcType::OSError
+        | ExcType::FileNotFoundError
+        | ExcType::FileExistsError
+        | ExcType::IsADirectoryError
+        | ExcType::NotADirectoryError
+        | ExcType::PermissionError
+        | ExcType::TimeoutError
+        | ExcType::UnsupportedOperation => Some(ExcType::OSError),
+        _ => None,
+    }
 }

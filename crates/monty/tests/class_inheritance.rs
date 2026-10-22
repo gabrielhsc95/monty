@@ -1071,8 +1071,14 @@ try:
 except TypeError as e:
     assert "duplicate base class ValueError" in str(e)
 
+# Sibling exceptions without custom layout combine cleanly
+class SiblingErr(ValueError, TypeError):
+    pass
+assert issubclass(SiblingErr, ValueError)
+assert issubclass(SiblingErr, TypeError)
+
 try:
-    class ConflictingErr(ValueError, TypeError):
+    class ConflictingErr(OSError, SyntaxError):
         pass
     assert False, "expected TypeError"
 except TypeError as e:
@@ -1236,7 +1242,7 @@ except TypeError as e:
     assert "duplicate base class A" in str(e)
 
 try:
-    class ConflictExc(ValueError, TypeError): pass
+    class ConflictExc(OSError, SyntaxError): pass
     assert False
 except TypeError as e:
     assert "multiple bases have instance lay-out conflict" in str(e)
@@ -1550,4 +1556,51 @@ except TypeError as e:
 else:
     assert False
 ");
+}
+
+#[test]
+fn sibling_exception_multiple_inheritance_and_layout_conflicts() {
+    run(r#"
+# Standard exception siblings without custom layouts combine cleanly
+class E1(KeyError, AttributeError):
+    pass
+
+e1 = E1("msg")
+assert isinstance(e1, KeyError)
+assert isinstance(e1, AttributeError)
+assert isinstance(e1, Exception)
+assert E1.__mro__ == (E1, KeyError, LookupError, AttributeError, Exception, BaseException, object)
+
+class E2(ValueError, TypeError):
+    pass
+
+e2 = E2("val and type")
+assert isinstance(e2, ValueError)
+assert isinstance(e2, TypeError)
+
+# Standard exception and custom layout exception (OSError) combine cleanly
+class E3(KeyError, OSError):
+    pass
+
+e3 = E3("key and os")
+assert isinstance(e3, KeyError)
+assert isinstance(e3, OSError)
+
+# Multiple conflicting custom layout exception bases raise layout conflict
+try:
+    class Bad1(OSError, SyntaxError):
+        pass
+except TypeError as e:
+    assert "multiple bases have instance lay-out conflict" in str(e)
+else:
+    assert False
+
+try:
+    class Bad2(OSError, SystemExit):
+        pass
+except TypeError as e:
+    assert "multiple bases have instance lay-out conflict" in str(e)
+else:
+    assert False
+"#);
 }

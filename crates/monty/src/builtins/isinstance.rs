@@ -7,7 +7,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{HeapData, HeapId, HeapRead, HeapReadOutput},
-    types::{PyTrait, Tuple, Type},
+    types::{PyTrait, Tuple, Type, class::ClassBase},
     value::Value,
 };
 
@@ -49,9 +49,10 @@ pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) 
                     if let Value::Ref(obj_id) = obj
                         && let HeapData::Instance(inst) = vm.heap.get(*obj_id)
                         && let HeapData::Class(cls) = vm.heap.get(inst.class())
-                        && let Some(base_exc) = cls.base_exception()
                     {
-                        base_exc.is_subclass_of(*handler_type)
+                        cls.mro()
+                            .iter()
+                            .any(|b| matches!(b, ClassBase::BuiltinExc(exc) if exc.is_subclass_of(*handler_type)))
                     } else {
                         false
                     }

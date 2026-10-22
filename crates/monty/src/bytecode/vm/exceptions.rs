@@ -10,7 +10,7 @@ use crate::{
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait},
+    types::{LazyHeapSet, PyTrait, class::ClassBase},
     value::Value,
 };
 
@@ -570,10 +570,10 @@ impl VM<'_> {
                     Value::Ref(id) => match self.heap.get(*id) {
                         HeapData::Exception(e) => e.exc_type().is_subclass_of(*handler_type),
                         HeapData::Instance(inst) => {
-                            if let HeapData::Class(cls) = self.heap.get(inst.class())
-                                && let Some(base_exc) = cls.base_exception()
-                            {
-                                base_exc.is_subclass_of(*handler_type)
+                            if let HeapData::Class(cls) = self.heap.get(inst.class()) {
+                                cls.mro().iter().any(
+                                    |b| matches!(b, ClassBase::BuiltinExc(exc) if exc.is_subclass_of(*handler_type)),
+                                )
                             } else {
                                 false
                             }
@@ -713,10 +713,10 @@ fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>)
                 e.exc_type() == raise.exc.exc_type() && e.custom_type_name() == raise.exc.custom_type_name()
             }
             HeapData::Instance(inst) => {
-                if let HeapData::Class(cls) = vm.heap.get(inst.class())
-                    && let Some(base_exc) = cls.base_exception()
-                {
-                    base_exc == raise.exc.exc_type()
+                if let HeapData::Class(cls) = vm.heap.get(inst.class()) {
+                    cls.mro()
+                        .iter()
+                        .any(|b| matches!(b, ClassBase::BuiltinExc(exc) if *exc == raise.exc.exc_type()))
                         && (raise.exc.custom_type_name().is_none()
                             || raise.exc.custom_type_name() == Some(cls.name().as_str(vm.interns)))
                 } else {

@@ -450,7 +450,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
                     match base {
                         ClassBase::Class(ancestor_id) => {
                             if let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
-                                && let Some(member) = ancestor_cls.namespace().get_by_str("__init__", vm.heap, vm.interns)
+                                && let Some(member) =
+                                    ancestor_cls.namespace().get_by_str("__init__", vm.heap, vm.interns)
                             {
                                 let member_val = member.clone_with_heap(vm.heap);
                                 let bound = BoundMethod {

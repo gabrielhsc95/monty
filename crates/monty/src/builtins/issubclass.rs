@@ -7,7 +7,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{HeapData, HeapId, HeapRead, HeapReadOutput},
-    types::{Tuple, Type},
+    types::{Tuple, Type, class::ClassBase},
     value::Value,
 };
 
@@ -74,9 +74,11 @@ pub(crate) fn issubclass_check(cls: &Value, classinfo: &Value, vm: &mut VM<'_>) 
                 Ok(exc_type.is_subclass_of(*handler_type))
             } else if let Value::Ref(id) = cls
                 && let HeapData::Class(class) = vm.heap.get(*id)
-                && let Some(base_exc) = class.base_exception()
             {
-                Ok(base_exc.is_subclass_of(*handler_type))
+                Ok(class
+                    .mro()
+                    .iter()
+                    .any(|b| matches!(b, ClassBase::BuiltinExc(exc) if exc.is_subclass_of(*handler_type))))
             } else {
                 Ok(false)
             }
