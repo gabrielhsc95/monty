@@ -1118,6 +1118,28 @@ try:
 except TypeError as e:
     assert str(e) == "object.__new__(): not enough arguments"
 
+# Calling object.__new__ with extra arguments or kwargs on non-exception classes
+try:
+    object.__new__(Plain, 1)
+    assert False, "expected TypeError"
+except TypeError as e:
+    assert str(e) == "object.__new__() takes exactly one argument (the type to instantiate)"
+
+try:
+    object.__new__(Plain, x=1)
+    assert False, "expected TypeError"
+except TypeError as e:
+    assert str(e) == "object.__new__() takes exactly one argument (the type to instantiate)"
+
+# Calling __new__ on built-in exception types
+v1 = ValueError.__new__(ValueError)
+assert isinstance(v1, ValueError)
+assert str(v1) == ""
+
+v2 = ValueError.__new__(ValueError, "msg")
+assert isinstance(v2, ValueError)
+assert str(v2) == "msg"
+
 # User class custom __new__ returning instance vs non-instance
 class Singleton:
     _instance = None
