@@ -1473,3 +1473,81 @@ s = MethodSpoof().f()
 assert s.__thisclass__ is MethodSpoof
 ");
 }
+
+#[test]
+fn custom_exception_caught_across_evaluate_function_boundary() {
+    run(r"
+class MyError(Exception):
+    pass
+
+def bad_key(x):
+    raise MyError('from key')
+
+caught = False
+try:
+    sorted([1, 2], key=bad_key)
+except MyError as e:
+    caught = True
+    assert isinstance(e, MyError)
+
+assert caught
+");
+}
+
+#[test]
+fn method_aliasing_and_self_reassignment_in_super() {
+    run(r"
+class Base:
+    def m(self):
+        return 'base'
+
+class Mid(Base):
+    def m(self):
+        return super().m()
+
+class Sub(Mid):
+    alias = Mid.m
+
+assert Sub().m() == 'base'
+
+class ReassignSelf(Base):
+    def m(self):
+        self = Base()
+        super()
+
+try:
+    ReassignSelf().m()
+except TypeError as e:
+    assert 'is not an instance or subtype' in str(e)
+else:
+    assert False
+");
+}
+
+#[test]
+fn super_init_mro_position_with_mixin_and_base_exception() {
+    run(r"
+class Mixin:
+    def __init__(self):
+        self.mixin_init_called = True
+
+class Combined(Exception, Mixin):
+    def __init__(self, msg):
+        super().__init__(msg)
+
+c = Combined('hello')
+assert c.args == ('hello',)
+assert not hasattr(c, 'mixin_init_called')
+
+class MyError(Exception):
+    pass
+
+err = MyError('msg')
+try:
+    super(BaseException, err).__init__(1, 2)
+except TypeError as e:
+    assert 'object.__init__() takes exactly one argument' in str(e)
+else:
+    assert False
+");
+}
