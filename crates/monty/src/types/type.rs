@@ -704,6 +704,18 @@ impl Type {
                         Value::Builtin(Builtins::Type(Self::Int)),
                         Value::Builtin(Builtins::Type(Self::Object)),
                     ]
+                } else if self == Self::DateTime {
+                    vec![
+                        Value::Builtin(Builtins::Type(Self::DateTime)),
+                        Value::Builtin(Builtins::Type(Self::Date)),
+                        Value::Builtin(Builtins::Type(Self::Object)),
+                    ]
+                } else if matches!(self, Self::DefaultDict | Self::Counter) {
+                    vec![
+                        Value::Builtin(Builtins::Type(self)),
+                        Value::Builtin(Builtins::Type(Self::Dict)),
+                        Value::Builtin(Builtins::Type(Self::Object)),
+                    ]
                 } else {
                     vec![
                         Value::Builtin(Builtins::Type(self)),
@@ -750,6 +762,10 @@ impl Type {
                 vec![]
             } else if self == Self::Bool {
                 vec![Value::Builtin(Builtins::Type(Self::Int))]
+            } else if self == Self::DateTime {
+                vec![Value::Builtin(Builtins::Type(Self::Date))]
+            } else if matches!(self, Self::DefaultDict | Self::Counter) {
+                vec![Value::Builtin(Builtins::Type(Self::Dict))]
             } else {
                 vec![Value::Builtin(Builtins::Type(Self::Object))]
             };
@@ -761,6 +777,18 @@ impl Type {
                 vec![
                     Value::Builtin(Builtins::Type(Self::Bool)),
                     Value::Builtin(Builtins::Type(Self::Int)),
+                    Value::Builtin(Builtins::Type(Self::Object)),
+                ]
+            } else if self == Self::DateTime {
+                vec![
+                    Value::Builtin(Builtins::Type(Self::DateTime)),
+                    Value::Builtin(Builtins::Type(Self::Date)),
+                    Value::Builtin(Builtins::Type(Self::Object)),
+                ]
+            } else if matches!(self, Self::DefaultDict | Self::Counter) {
+                vec![
+                    Value::Builtin(Builtins::Type(self)),
+                    Value::Builtin(Builtins::Type(Self::Dict)),
                     Value::Builtin(Builtins::Type(Self::Object)),
                 ]
             } else {

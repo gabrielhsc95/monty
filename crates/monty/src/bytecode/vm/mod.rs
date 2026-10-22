@@ -1879,6 +1879,7 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
+                    let saved_ip = self.instruction_ip;
                     let exc = if let Value::Ref(id) = &exc
                         && let HeapData::Class(cls) = self.heap.get(*id)
                         && cls.base_exception().is_some()
@@ -1889,8 +1890,12 @@ impl<'h> VM<'h> {
                             this.evaluate_function(exc, ArgValues::Empty)
                         };
                         match result {
-                            Ok(v) => v,
+                            Ok(v) => {
+                                self.instruction_ip = saved_ip;
+                                v
+                            }
                             Err(error) => {
+                                self.instruction_ip = saved_ip;
                                 catch!(self, error);
                                 continue;
                             }

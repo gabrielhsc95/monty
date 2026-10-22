@@ -122,51 +122,10 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
     let vm = &mut *guard;
     for i in 0..len {
         vm.heap.tracker.check_time_every(i)?;
-        match &tuple.get(vm.heap).as_slice()[i] {
-            Value::Builtin(Builtins::Type(t)) => {
-                if obj.py_type(vm).is_instance_of(*t) {
-                    return Ok(true);
-                }
-            }
-            Value::Builtin(Builtins::ExcType(exc)) => {
-                if matches!(obj.py_type(vm), Type::Exception(et) if et.is_subclass_of(*exc)) {
-                    return Ok(true);
-                }
-            }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => {
-                if instance_of_class(obj, *id, vm) {
-                    return Ok(true);
-                }
-            }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NamedTupleClass(_)) => {
-                if instance_of_namedtuple_class(obj, *id, vm) {
-                    return Ok(true);
-                }
-            }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::HostClassType(_)) => {
-                if instance_of_host_class(obj, *id, vm) {
-                    return Ok(true);
-                }
-            }
-            Value::Ref(nested_id) if let HeapReadOutput::Tuple(nested) = vm.heap.read(*nested_id) => {
-                if isinstance_check_tuple(obj, &nested, vm)? {
-                    return Ok(true);
-                }
-            }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::GenericAlias(_)) => {
-                return Err(ExcType::isinstance_parameterized_generic());
-            }
-            Value::Ref(id) if let HeapData::Union(union) = vm.heap.get(*id) => {
-                let args = union.args(vm.heap);
-                defer_drop!(args, vm);
-                let Some(HeapReadOutput::Tuple(members)) = args.read_heap(vm) else {
-                    unreachable!("Union::args is always a tuple")
-                };
-                if isinstance_check_tuple(obj, &members, vm)? {
-                    return Ok(true);
-                }
-            }
-            _ => return Err(ExcType::isinstance_arg2_error()),
+        let item = tuple.get(vm.heap).as_slice()[i].clone_with_heap(vm.heap);
+        defer_drop!(item, vm);
+        if isinstance_check(obj, item, vm)? {
+            return Ok(true);
         }
     }
     Ok(false)

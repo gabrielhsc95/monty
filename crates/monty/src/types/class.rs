@@ -385,6 +385,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             return vm.call_function(name_val, args);
         }
 
+        // `Foo.method(args)` calls the member with the given args.
+        // For `__init_subclass__`, which is an implicit classmethod in Python,
+        // we prepend the class itself (self.id()) as the first argument.
+        if let Some(member) = self.get(vm.heap).mro_getattr(attr_str, vm.heap, vm.interns) {
+            defer_drop!(member, vm);
+            let call_args = if attr_str == "__init_subclass__" {
+                let self_id = self.id();
+                vm.heap.inc_ref(self_id);
+                args.prepend(Value::Ref(self_id))
+            } else {
+                args
+            };
+            return vm.call_function(member, call_args);
+        }
+
         if attr_str == "mro" {
             let class_name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
             let pos = args.into_pos_only(&format!("{class_name}.mro"), vm.heap)?;
@@ -400,13 +415,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             let items = class_mro_values(class_id, &mro, vm.heap);
             let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
             return Ok(CallResult::Value(Value::Ref(list_id)));
-        }
-
-        // `Foo.method(args)` calls the raw (unbound) member with the given args —
-        // no `self` is inserted, the caller passes the instance explicitly.
-        if let Some(member) = self.get(vm.heap).mro_getattr(attr_str, vm.heap, vm.interns) {
-            defer_drop!(member, vm);
-            return vm.call_function(member, args);
         }
 
         if attr_str == "__init_subclass__" {

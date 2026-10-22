@@ -41,7 +41,7 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
     types::{
-        Dict, Type, Union, allocate_tuple,
+        Dict, List, Type, Union, allocate_tuple,
         iter::collect_owned_iterable,
         long_int::repeat_count,
         py_trait::LazyHeapSet,
@@ -959,13 +959,33 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm.interns);
         if attr.static_string(vm.interns) == Some(StaticStrings::UnderMake) {
             make_namedtuple(self.id(), vm, args).map(CallResult::Value)
+        } else if attr_str == "mro" {
+            let class_name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
+            let pos = args.into_pos_only(&format!("{class_name}.mro"), vm.heap)?;
+            if !pos.as_slice().is_empty() {
+                let count = pos.as_slice().len();
+                pos.drop_with(vm.heap);
+                return Err(ExcType::type_error(format!(
+                    "{class_name}.mro() takes no arguments ({count} given)"
+                )));
+            }
+            let self_id = self.id();
+            vm.heap.inc_ref(self_id);
+            let items = vec![
+                Value::Ref(self_id),
+                Value::Builtin(Builtins::Type(Type::Tuple)),
+                Value::Builtin(Builtins::Type(Type::Object)),
+            ];
+            let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
+            Ok(CallResult::Value(Value::Ref(list_id)))
         } else {
             args.drop_with(vm);
             Err(ExcType::attribute_error_type(
                 self.get(vm.heap).name.as_str(vm.interns),
-                attr.as_str(vm.interns),
+                attr_str,
             ))
         }
     }

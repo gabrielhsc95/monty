@@ -454,14 +454,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
                                     ancestor_cls.namespace().get_by_str("__init__", vm.heap, vm.interns)
                             {
                                 let member_val = member.clone_with_heap(vm.heap);
-                                let bound = BoundMethod {
-                                    instance: obj.clone_with_heap(vm.heap),
-                                    func: member_val,
-                                };
-                                let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-                                let bound_val = Value::Ref(bound_id);
-                                defer_drop!(bound_val, vm);
-                                return vm.call_function(bound_val, args);
+                                if is_method_value(&member_val, vm) {
+                                    let bound = BoundMethod {
+                                        instance: obj.clone_with_heap(vm.heap),
+                                        func: member_val,
+                                    };
+                                    let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+                                    let bound_val = Value::Ref(bound_id);
+                                    defer_drop!(bound_val, vm);
+                                    return vm.call_function(bound_val, args);
+                                }
+                                defer_drop!(member_val, vm);
+                                return vm.call_function(member_val, args);
                             }
                         }
                         ClassBase::BuiltinExc(_) => {

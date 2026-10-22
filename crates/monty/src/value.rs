@@ -901,7 +901,7 @@ impl Value {
             Self::Float(_) => Type::Float,
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
-            Self::Builtin(_) => Type::BuiltinFunction,
+            Self::Builtin(b) => b.py_type(),
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
@@ -1180,26 +1180,28 @@ impl Value {
                 return match attr_str {
                     "__name__" => {
                         let name: &'static str = (*exc_type).into();
-                        Ok(CallResult::Value(allocate_string(name, vm.heap)))
+                        let bare_name = name.rsplit_once('.').map_or(name, |(_, bare)| bare);
+                        Ok(CallResult::Value(allocate_string(bare_name, vm.heap)))
                     }
                     "__class__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
                         BuiltinsFunctions::Type,
                     )))),
                     "__bases__" => {
-                        let items = match exc_type.parent() {
-                            None => vec![Self::Builtin(Builtins::Type(Type::Object))],
-                            Some(parent) => vec![Self::Builtin(Builtins::ExcType(parent))],
+                        let bases = exc_type.direct_bases();
+                        let items: Vec<Self> = if bases.is_empty() {
+                            vec![Self::Builtin(Builtins::Type(Type::Object))]
+                        } else {
+                            bases.iter().map(|&b| Self::Builtin(Builtins::ExcType(b))).collect()
                         };
                         let tuple_val = allocate_tuple(items.into(), vm.heap);
                         Ok(CallResult::Value(tuple_val))
                     }
                     "__mro__" => {
-                        let mut items = vec![Self::Builtin(Builtins::ExcType(*exc_type))];
-                        let mut cur = exc_type.parent();
-                        while let Some(parent) = cur {
-                            items.push(Self::Builtin(Builtins::ExcType(parent)));
-                            cur = parent.parent();
-                        }
+                        let mut items: Vec<Self> = exc_type
+                            .mro()
+                            .into_iter()
+                            .map(|b| Self::Builtin(Builtins::ExcType(b)))
+                            .collect();
                         items.push(Self::Builtin(Builtins::Type(Type::Object)));
                         let tuple_val = allocate_tuple(items.into(), vm.heap);
                         Ok(CallResult::Value(tuple_val))

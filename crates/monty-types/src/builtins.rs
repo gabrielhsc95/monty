@@ -65,7 +65,6 @@ pub enum BuiltinsFunctions {
     // Input,
     // int - handled by Type enum
     Isinstance,
-    // Issubclass,
     // Iter - handled by Type enum
     Len,
     // list - handled by Type enum

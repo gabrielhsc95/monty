@@ -699,6 +699,8 @@ fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropG
             {
                 raise.exc.set_arg(Some(s.to_owned()));
             }
+        } else {
+            this.clear_unwinding_exception();
         }
     }
 }
@@ -719,8 +721,7 @@ fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>)
                     cls.mro()
                         .iter()
                         .any(|b| matches!(b, ClassBase::BuiltinExc(exc) if *exc == raise.exc.exc_type()))
-                        && (raise.exc.custom_type_name().is_none()
-                            || raise.exc.custom_type_name() == Some(cls.name().as_str(vm.interns)))
+                        && raise.exc.custom_type_name() == Some(cls.name().as_str(vm.interns))
                 } else {
                     false
                 }

@@ -4,7 +4,7 @@ use monty_types::ExcType;
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcTypeExt, RunResult},
@@ -29,6 +29,19 @@ pub fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
         Value::Builtin(Builtins::ExcType(exc_type)) => {
             let arg_values = ArgValues::from_parts(extra_args, KwargsValues::Empty);
             exc_type.call(vm, arg_values)
+        }
+        Value::Builtin(Builtins::Type(t)) => {
+            extra_args.drop_with(vm.heap);
+            let name = t.dunder_name(vm.heap, vm.interns);
+            Err(ExcType::type_error(format!(
+                "object.__new__({name}) is not safe, use {name}.__new__()"
+            )))
+        }
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+            extra_args.drop_with(vm.heap);
+            Err(ExcType::type_error(
+                "object.__new__(type) is not safe, use type.__new__()",
+            ))
         }
         Value::Ref(class_id) => {
             let HeapData::Class(cls) = vm.heap.get(*class_id) else {

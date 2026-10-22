@@ -1092,16 +1092,61 @@ impl<'h> VM<'h> {
                 return Ok(CallResult::Value(instance));
             }
             let instance_id = instance.into_ref_id().unwrap();
-            let init = match this.heap.get(class_id) {
+            let actual_class = match this.heap.get(instance_id) {
+                HeapData::Instance(inst) => inst.class(),
+                _ => class_id,
+            };
+            let init = match this.heap.get(actual_class) {
                 HeapData::Class(class) => class.mro_getattr("__init__", this.heap, this.interns),
                 _ => None,
             };
+            let actual_base_exc = match this.heap.get(actual_class) {
+                HeapData::Class(class) => class.base_exception(),
+                _ => None,
+            };
             return match init {
+                None if dataclasses::is_dataclass_class(actual_class, this) => {
+                    let HeapReadOutput::Class(class) = this.heap.read(actual_class) else {
+                        unreachable!("instantiate_class is only reached with a class")
+                    };
+                    dataclasses::dataclass_init(this, &class, Value::Ref(instance_id), args_for_init)
+                }
+                None if actual_base_exc.is_some() => {
+                    let has_kwargs = match &args_for_init {
+                        ArgValues::Kwargs(k) => !k.is_empty(),
+                        ArgValues::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
+                        _ => false,
+                    };
+                    if has_kwargs {
+                        args_for_init.drop_with(this);
+                        Value::Ref(instance_id).drop_with(this);
+                        let name = class_name(actual_class, this.heap, this.interns);
+                        return Err(ExcType::type_error(format!("{name}() takes no keyword arguments")));
+                    }
+                    let pos_items: Vec<Value> = match &args_for_init {
+                        ArgValues::Empty => vec![],
+                        ArgValues::One(v) => vec![v.clone_with_heap(this.heap)],
+                        ArgValues::Two(a, b) => vec![a.clone_with_heap(this.heap), b.clone_with_heap(this.heap)],
+                        ArgValues::ArgsKargs { args, .. } => {
+                            args.iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        }
+                        ArgValues::Kwargs(_) => vec![],
+                    };
+                    args_for_init.drop_with(this);
+                    let args_tuple = allocate_tuple(pos_items.into(), this.heap);
+                    let key = Value::InternString(this.interns.intern_static(StaticStrings::Args));
+                    let HeapReadOutput::Instance(inst) = this.heap.read(instance_id) else {
+                        unreachable!("instance_id is an Instance");
+                    };
+                    let replaced = inst.set_attr_unchecked(key, args_tuple, this)?;
+                    replaced.drop_with(this);
+                    Ok(CallResult::Value(Value::Ref(instance_id)))
+                }
                 None => {
                     args_for_init.drop_with(this);
                     Ok(CallResult::Value(Value::Ref(instance_id)))
                 }
-                Some(init_func) => this.dispatch_init(class_id, instance_id, init_func, args_for_init),
+                Some(init_func) => this.dispatch_init(actual_class, instance_id, init_func, args_for_init),
             };
         }
 

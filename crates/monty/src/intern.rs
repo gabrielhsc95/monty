@@ -947,12 +947,12 @@ pub enum StaticStrings {
     /// 3-arg `type()` builtin when the caller's dict omits it.
     #[strum(serialize = "__doc__")]
     DunderDoc,
-    /// `__hash__` — synthesized into the namespace of classes with `__eq__` but no `__hash__`.
-    #[strum(serialize = "__hash__")]
-    DunderHash,
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,
+    /// `__hash__` — synthesized into the namespace of classes with `__eq__` but no `__hash__`.
+    #[strum(serialize = "__hash__")]
+    DunderHash,
     /// `__main__`, the `__name__` of the module being run.
     #[strum(serialize = "__main__")]
     DunderMain,

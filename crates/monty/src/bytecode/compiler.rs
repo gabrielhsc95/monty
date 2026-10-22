@@ -967,8 +967,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Modelled on CPython's class-body code object: the class body is compiled
     /// to a synthetic zero-arg function (via
     /// [`emit_make_class_body`](Self::emit_make_class_body)) that runs the class
-    /// statements in its own scope and returns the assembled `Class`. We emit
-    /// that function value, call it with zero args, and bind the result to the
+    /// statements in its own scope and returns the namespace `Dict`. We evaluate
+    /// kwargs and bases, call the class body function, build the `Class` object,
+    /// invoke `__init_subclass__`, apply decorators, and bind the result to the
     /// class name.
     #[expect(clippy::too_many_arguments)]
     fn compile_class_def(

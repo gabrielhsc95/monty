@@ -522,6 +522,75 @@ impl ExcType {
             | Self::CsvError => Some(Self::Exception),
         }
     }
+
+    /// Returns the direct bases of this exception type.
+    ///
+    /// In CPython, `io.UnsupportedOperation` inherits from both `OSError` and `ValueError`.
+    /// All other exception types have a single parent (or none for `BaseException`).
+    #[must_use]
+    pub const fn direct_bases(self) -> &'static [Self] {
+        match self {
+            Self::BaseException => &[],
+            Self::UnsupportedOperation => &[Self::OSError, Self::ValueError],
+            Self::Exception | Self::KeyboardInterrupt | Self::SystemExit => &[Self::BaseException],
+            Self::KeyError | Self::IndexError => &[Self::LookupError],
+            Self::LookupError => &[Self::Exception],
+            Self::ZeroDivisionError | Self::OverflowError => &[Self::ArithmeticError],
+            Self::ArithmeticError => &[Self::Exception],
+            Self::RecursionError | Self::NotImplementedError => &[Self::RuntimeError],
+            Self::RuntimeError => &[Self::Exception],
+            Self::FrozenInstanceError => &[Self::AttributeError],
+            Self::AttributeError => &[Self::Exception],
+            Self::UnboundLocalError => &[Self::NameError],
+            Self::NameError => &[Self::Exception],
+            Self::UnicodeDecodeError
+            | Self::UnicodeEncodeError
+            | Self::JsonDecodeError
+            | Self::TomlDecodeError
+            | Self::BinasciiError => &[Self::ValueError],
+            Self::ValueError => &[Self::Exception],
+            Self::ModuleNotFoundError => &[Self::ImportError],
+            Self::ImportError => &[Self::Exception],
+            Self::FileNotFoundError
+            | Self::FileExistsError
+            | Self::IsADirectoryError
+            | Self::NotADirectoryError
+            | Self::PermissionError
+            | Self::TimeoutError => &[Self::OSError],
+            Self::OSError => &[Self::Exception],
+            Self::AssertionError
+            | Self::MemoryError
+            | Self::StopIteration
+            | Self::SyntaxError
+            | Self::TypeError
+            | Self::RePatternError
+            | Self::BinasciiIncomplete
+            | Self::CsvError => &[Self::Exception],
+        }
+    }
+
+    /// Returns the method resolution order (MRO) for this exception type
+    /// (excluding `object`).
+    #[must_use]
+    pub fn mro(self) -> Vec<Self> {
+        if self == Self::UnsupportedOperation {
+            vec![
+                Self::UnsupportedOperation,
+                Self::OSError,
+                Self::ValueError,
+                Self::Exception,
+                Self::BaseException,
+            ]
+        } else {
+            let mut list = vec![self];
+            let mut cur = self.parent();
+            while let Some(p) = cur {
+                list.push(p);
+                cur = p.parent();
+            }
+            list
+        }
+    }
 }
 
 /// Structured payload attached to exception types whose CPython counterparts
