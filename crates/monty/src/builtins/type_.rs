@@ -244,16 +244,31 @@ fn create_class(
     // namespace keys; Monty has no warnings machinery, so silently accepting
     // them would hide the mistake — raise instead. Validated before cloning
     // any pairs so the error path has nothing to clean up.
-    if let Some((bad_key, _)) = source.iter().find(|(k, _)| !k.is_str(vm.heap)) {
-        let name_str = class_name.as_str(vm.interns);
-        let key_type = bad_key.py_type_heap(vm.heap).name(vm.heap, vm.interns);
-        return Err(ExcType::type_error(format!(
-            "non-string key ({key_type}) in the namespace of class '{name_str}'"
-        )));
+    for (i, (k, _)) in source.iter().enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
+        if !k.is_str(vm.heap) {
+            let name_str = class_name.as_str(vm.interns);
+            let key_type = k.py_type_heap(vm.heap).name(vm.heap, vm.interns);
+            return Err(ExcType::type_error(format!(
+                "non-string key ({key_type}) in the namespace of class '{name_str}'"
+            )));
+        }
+    }
+
+    let mut inherited_methods = ahash::AHashSet::new();
+    for (i, base) in mro.iter().enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
+        if let ClassBase::Class(ancestor_id) = base
+            && let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
+        {
+            inherited_methods.extend(ancestor_cls.defined_methods().iter().copied());
+        }
     }
 
     let mut defined_methods = Vec::new();
-    for (_, val) in source {
+    let mut seen_methods = ahash::AHashSet::new();
+    for (i, (_, val)) in source.iter().enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
         let fid = match val {
             Value::DefFunction(fid) => Some(*fid),
             Value::Ref(id) => match vm.heap.get(*id) {
@@ -263,38 +278,22 @@ fn create_class(
             },
             _ => None,
         };
-        if let Some(fid) = fid {
-            let is_inherited = c3_bases.iter().any(|base| {
-                if let ClassBase::Class(base_id) = base
-                    && let HeapData::Class(base_cls) = vm.heap.get(*base_id)
-                {
-                    base_cls.defined_methods().contains(&fid)
-                        || base_cls.mro().iter().any(|b| {
-                            if let ClassBase::Class(ancestor_id) = b
-                                && let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
-                            {
-                                ancestor_cls.defined_methods().contains(&fid)
-                            } else {
-                                false
-                            }
-                        })
-                } else {
-                    false
-                }
-            });
-            if !is_inherited {
-                defined_methods.push(fid);
-            }
+        if let Some(fid) = fid
+            && !inherited_methods.contains(&fid)
+            && seen_methods.insert(fid)
+        {
+            defined_methods.push(fid);
         }
     }
 
     // Copy the namespace (CPython semantics: the class owns an independent
     // dict). `clone_with_heap` takes `&Heap`, so the pairs can be cloned
     // while `source` still borrows the heap immutably.
-    let mut pairs: Vec<(Value, Value)> = source
-        .iter()
-        .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-        .collect();
+    let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(source.len() + 2);
+    for (i, (k, v)) in source.iter().enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
+        pairs.push((k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)));
+    }
     if source.get_by_str("__doc__", vm.heap, vm.interns).is_none() {
         pairs.push((
             Value::InternString(vm.interns.intern_static(StaticStrings::DunderDoc)),
@@ -334,7 +333,8 @@ fn create_class(
 
     // Look for __init_subclass__ in base classes' MRO
     let mut init_subclass = None;
-    for base in &mro {
+    for (i, base) in mro.iter().enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
         if let ClassBase::Class(base_id) = base
             && let HeapData::Class(base_cls) = vm.heap.get(*base_id)
             && let Some(val) = base_cls

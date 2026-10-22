@@ -901,10 +901,10 @@ impl<'h> VM<'h> {
     ) -> Self {
         let SessionTables { global_names, interns } = tables;
         Self {
-            stack: Vec::with_capacity(32),
+            stack: Vec::with_capacity(64),
             globals,
             current_frame: CallFrame::new_module(&program.module_code, 0),
-            suspended_frames: Vec::new(),
+            suspended_frames: Vec::with_capacity(16),
             heap,
             interns,
             global_names,

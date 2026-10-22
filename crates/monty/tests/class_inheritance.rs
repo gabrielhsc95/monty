@@ -1927,18 +1927,12 @@ assert not issubclass(MyCustom, int)
         "type.nonexistent_attr",
         "type object 'type' has no attribute 'nonexistent_attr'",
     );
-    run_err(
-        "type.mro(1)",
-        "type.mro() takes no arguments (1 given)",
-    );
+    run_err("type.mro(1)", "type.mro() takes no arguments (1 given)");
     run_err(
         "ValueError.__new__(TypeError)",
         "ValueError.__new__(TypeError): TypeError is not a subtype of ValueError",
     );
-    run_err(
-        "ValueError.__new__()",
-        "ValueError.__new__(): not enough arguments",
-    );
+    run_err("ValueError.__new__()", "ValueError.__new__(): not enough arguments");
     run_err(
         "from collections import namedtuple\nPoint = namedtuple('Point', ['x', 'y'])\nPoint.nonexistent_attr",
         "type object 'Point' has no attribute 'nonexistent_attr'",
@@ -2062,10 +2056,7 @@ assert repr(c_exc) == 'CycleExc(...)'
         "class A: pass\nclass B: pass\nsuper(A, B())",
         "super(type, obj): obj (instance of B) is not an instance or subtype of type (A).",
     );
-    run_err(
-        "class A: pass\nlen(super(A, A()))",
-        "'super' has no len()",
-    );
+    run_err("class A: pass\nlen(super(A, A()))", "'super' has no len()");
     run_err(
         r"
 class MyExc(Exception):
@@ -2162,4 +2153,35 @@ class UnpackedBase(*bases):
 
 assert issubclass(UnpackedBase, object)
 ");
+}
+
+#[test]
+fn class_creation_method_deduplication_and_time_limits() {
+    run(r"
+def f(self):
+    return 1
+
+def g(self):
+    return super().m1() + 2
+
+# Base has same function bound to multiple names
+Base = type('Base', (), {'m1': f, 'm2': f, 'm3': f})
+Child = type('Child', (Base,), {'m1': g, 'm2': g})
+
+c = Child()
+assert c.m1() == 3
+assert c.m2() == 3
+");
+
+    let code = r"
+def f(self): pass
+ns = {str(i): f for i in range(10_000)}
+Base = type('Base', (), ns)
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_nanos(1));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err(), "should exceed time limit in type.__new__");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
