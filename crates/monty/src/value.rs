@@ -1151,17 +1151,18 @@ impl Value {
             // Instances resolve attributes (instance dict → class methods/vars,
             // binding methods) in a dedicated path that has the heap id needed to
             // build bound methods.
-            Self::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) => {
-                return instance_getattr(*heap_id, attr, vm);
-            }
             Self::Ref(heap_id) => {
-                if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
+                let output = vm.heap.read(*heap_id);
+                if matches!(output, HeapReadOutput::Instance(_)) {
+                    return instance_getattr(*heap_id, attr, vm);
+                }
+                if let Some(call_result) = output.py_getattr(attr, vm)? {
                     return Ok(call_result);
                 }
                 // CPython names the module, not its type, for a missing module attribute.
-                if let HeapData::Module(module) = vm.heap.get(*heap_id) {
+                if let HeapReadOutput::Module(module) = output {
                     return Err(ExcType::attribute_error_module(
-                        module.name_str(vm.interns),
+                        module.get(vm.heap).name_str(vm.interns),
                         attr.as_str(vm.interns),
                     ));
                 }
