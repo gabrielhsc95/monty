@@ -993,12 +993,8 @@ fn timeout_in_str_join() {
 #[test]
 fn timeout_in_sorted_comparison_loop() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
-    repl.feed_run(
-        "x = list(range(10_000, 0, -1))",
-        vec![],
-        PrintWriter::Stdout,
-    )
-    .expect("setup should succeed");
+    repl.feed_run("x = list(range(10_000, 0, -1))", vec![], PrintWriter::Stdout)
+        .expect("setup should succeed");
     repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
     let start = Instant::now();
     let exc = repl
