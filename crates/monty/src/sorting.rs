@@ -46,7 +46,13 @@ pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_>) -> 
         ArgValues::Kwargs(KwargsValues::Inline(kws)) if kws.len() == 1 => {
             let name = vm.interns.get_str(kws[0].0);
             if name == "reverse" {
-                let reverse = kws[0].1.py_bool(vm)?;
+                let reverse = match kws[0].1.py_bool(vm) {
+                    Ok(reverse) => reverse,
+                    Err(error) => {
+                        args.drop_with(vm);
+                        return Err(error);
+                    }
+                };
                 args.drop_with(vm);
                 return sort_values(items, None, reverse, vm);
             } else if name == "key" && matches!(kws[0].1, Value::None) {

@@ -1298,7 +1298,7 @@ impl<'h> VM<'h> {
                 countdown = c;
             } else {
                 countdown = CHECK_INTERVAL;
-                self.dispatch_checkpoint(check_limits, poll_print)?;
+                try_catch!(self, self.dispatch_checkpoint(check_limits, poll_print));
             }
 
             // Track instruction IP for exception table lookup
