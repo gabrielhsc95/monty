@@ -30,7 +30,21 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
-    let items: Vec<_> = collect_owned_iterable(iterable, vm)?;
+    let items = if let Value::Ref(id) = &iterable
+        && let HeapData::List(list) = vm.heap.get(*id)
+    {
+        let items: Vec<Value> = list.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect();
+        iterable.drop_with(vm);
+        items
+    } else if let Value::Ref(id) = &iterable
+        && let HeapData::Tuple(tuple) = vm.heap.get(*id)
+    {
+        let items: Vec<Value> = tuple.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect();
+        iterable.drop_with(vm);
+        items
+    } else {
+        collect_owned_iterable(iterable, vm)?
+    };
     let mut items_guard = DropGuard::new(items, vm);
     let (items, vm) = items_guard.as_parts_mut();
 
