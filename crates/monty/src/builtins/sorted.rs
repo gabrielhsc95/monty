@@ -1,14 +1,36 @@
 //! Implementation of the sorted() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{DropGuard, DropWithContext, Heap, HeapData},
+    resource_checks::check_estimated_size,
     sorting::parse_and_sort,
     types::{List, iter::collect_owned_iterable},
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
+
+fn clone_slice_with_checks(
+    slice: &[Value],
+    tracker: &ResourceTracker,
+    heap: &Heap,
+) -> Result<Vec<Value>, Box<(Vec<Value>, RunError)>> {
+    let len = slice.len();
+    if let Err(e) = check_estimated_size(len.saturating_mul(VALUE_SIZE), tracker) {
+        return Err(Box::new((Vec::new(), e.into())));
+    }
+    let mut cloned = Vec::with_capacity(len);
+    for (i, v) in slice.iter().enumerate() {
+        if let Err(e) = tracker.check_time_every(i) {
+            return Err(Box::new((cloned, e.into())));
+        }
+        cloned.push(v.clone_with_heap(heap));
+    }
+    Ok(cloned)
+}
 
 /// Implementation of the sorted() builtin function.
 ///
@@ -33,17 +55,39 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let items = if let Value::Ref(id) = &iterable
         && let HeapData::List(list) = vm.heap.get(*id)
     {
-        let items: Vec<Value> = list.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect();
+        let res = clone_slice_with_checks(list.as_slice(), &vm.heap.tracker, vm.heap);
         iterable.drop_with(vm);
-        items
+        match res {
+            Ok(items) => items,
+            Err(boxed) => {
+                let (partial, err) = *boxed;
+                partial.drop_with(vm);
+                kwargs.drop_with(vm);
+                return Err(err);
+            }
+        }
     } else if let Value::Ref(id) = &iterable
         && let HeapData::Tuple(tuple) = vm.heap.get(*id)
     {
-        let items: Vec<Value> = tuple.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect();
+        let res = clone_slice_with_checks(tuple.as_slice(), &vm.heap.tracker, vm.heap);
         iterable.drop_with(vm);
-        items
+        match res {
+            Ok(items) => items,
+            Err(boxed) => {
+                let (partial, err) = *boxed;
+                partial.drop_with(vm);
+                kwargs.drop_with(vm);
+                return Err(err);
+            }
+        }
     } else {
-        collect_owned_iterable(iterable, vm)?
+        match collect_owned_iterable(iterable, vm) {
+            Ok(items) => items,
+            Err(err) => {
+                kwargs.drop_with(vm);
+                return Err(err);
+            }
+        }
     };
     let mut items_guard = DropGuard::new(items, vm);
     let (items, vm) = items_guard.as_parts_mut();

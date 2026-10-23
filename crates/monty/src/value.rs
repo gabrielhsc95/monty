@@ -1152,10 +1152,10 @@ impl Value {
             // binding methods) in a dedicated path that has the heap id needed to
             // build bound methods.
             Self::Ref(heap_id) => {
-                let output = vm.heap.read(*heap_id);
-                if matches!(output, HeapReadOutput::Instance(_)) {
+                if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) {
                     return instance_getattr(*heap_id, attr, vm);
                 }
+                let output = vm.heap.read(*heap_id);
                 if let Some(call_result) = output.py_getattr(attr, vm)? {
                     return Ok(call_result);
                 }
