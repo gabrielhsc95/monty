@@ -986,19 +986,30 @@ fn timeout_in_str_join() {
     assert_timeout_in_builtin("' '.join(str(i) for i in range(10**18))", "str.join with generator");
 }
 
-/// Test that the insertion sort inner loop in `sorted()` respects the time limit.
+/// Test that the sort comparison loop in `sorted()` respects the time limit.
 ///
-/// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
-/// The sort comparison loop polls the time limit (amortized, every 64th comparison).
+/// Uses an unsorted list where pattern-defeating quicksort cannot short-circuit,
+/// exercising the comparison loop which polls the time limit every 64th comparison.
 #[test]
 fn timeout_in_sorted_comparison_loop() {
-    // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
-    // data is O(n^2).
-    let code = r"
-x = list(range(10**6, 0, -1))
-sorted(x)
-";
-    assert_timeout_in_builtin(code, "sorted(reversed list)");
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = list(range(0, 1_000_000, 2)) + list(range(1, 1_000_000, 2))",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .expect("setup should succeed");
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("sorted(x)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted comparison loop must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "should terminate promptly, took {elapsed:?}"
+    );
 }
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
