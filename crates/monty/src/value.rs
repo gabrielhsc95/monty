@@ -501,6 +501,12 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
+            if matches!(
+                vm.heap.get(*id),
+                HeapData::Str(_) | HeapData::Tuple(_) | HeapData::Bytes(_) | HeapData::LongInt(_)
+            ) {
+                return Ok(false);
+            }
             vm.heap.read(*id).py_iadd_impl(other, vm)
         } else {
             Ok(false)
