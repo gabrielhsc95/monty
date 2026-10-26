@@ -18,7 +18,7 @@ Python.
 `set`, `slice`, `str`, `tuple`. Exception classes (`ValueError`,
 `TypeError`, etc.) are also names in the builtin namespace.
 `object` serves as the universal base class and namespace for `object.__new__` and
-`object.__setattr__` (calling `object()` directly raises `TypeError: cannot create 'object' instances`).
+`object.__setattr__` (calling `object()` directly is rejected; see [classes.md](classes.md)).
 
 ## Builtins that are NOT implemented
 

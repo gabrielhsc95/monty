@@ -43,9 +43,11 @@ arguments, so `MyError(1, 2, 3)` sets `exc.args == (1, 2, 3)`.
 ## Attributes
 
 - `exc.args` — for built-in exceptions, a tuple with 0 or 1 elements. For user-defined
-    exception subclasses, a tuple containing all positional arguments passed to the constructor.
+    exception subclasses, a tuple reflecting the arguments forwarded to `BaseException.__init__`
+    (by default, all positional arguments when `__init__` is not overridden).
     Always a `tuple`, even when empty.
-- `str(exc)` — returns the single message string, or `""` if none.
+- `str(exc)` — returns the single message string, `""` if none, or the tuple repr when two
+    or more arguments are present (matching CPython's default `BaseException.__str__`).
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
     `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
