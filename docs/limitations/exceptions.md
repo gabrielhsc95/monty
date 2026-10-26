@@ -33,15 +33,18 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 
 ## Constructor signature
 
-All exception constructors accept **zero or one string argument** only.
+Built-in exception constructors accept **zero or one string argument** only.
 Multi-argument forms used in CPython (e.g. `OSError(errno, strerror, filename)`,
 `UnicodeDecodeError(encoding, obj, start, end, reason)`) are
 not supported; passing more than one argument raises an internal error.
+User-defined exception subclasses (`class MyError(Exception): pass`) accept arbitrary positional
+arguments, so `MyError(1, 2, 3)` sets `exc.args == (1, 2, 3)`.
 
 ## Attributes
 
-- `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
-    empty.
+- `exc.args` — for built-in exceptions, a tuple with 0 or 1 elements. For user-defined
+    exception subclasses, a tuple containing all positional arguments passed to the constructor.
+    Always a `tuple`, even when empty.
 - `str(exc)` — returns the single message string, or `""` if none.
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
@@ -75,6 +78,7 @@ class AppError(Exception):
 ```
 
 - Custom exception instances are user `Instance` objects rather than native `Exception` heap objects, and lack native exception attributes and methods such as `__cause__`, `__context__`, `add_note()`, `with_traceback()`, `.errno`, and `.value`.
+- Returning (rather than raising) a user-defined exception instance exports it across the host boundary as a `MontyClassProxy` (`ClassInstance`) rather than an `Exception`.
 
 ## Control flow in `finally`
 
