@@ -117,7 +117,11 @@ order and error wording, but with these divergences:
 - **`__new__` and `__init_subclass__` cannot suspend**: like `__repr__`/`__str__`,
     they run to completion synchronously via `evaluate_function`, so calling an
     external function or OS call from inside `__new__` or `__init_subclass__` raises
-    `NotImplementedError` rather than suspending to the host.
+    `NotImplementedError` rather than suspending to the host (inherited synchronous
+    `__init__` does support suspension and snapshotting).
+- **Subclass reflected operator precedence**: In `Base() + Sub()` and `Base() == Sub()`, Monty currently tries `Base.__add__` / `Base.__eq__` before `Sub.__radd__` / `Sub.__eq__`.
+- **Zero-argument `super()` in nested closures & lexical `__class__`**: Zero-arg `super()` works directly inside methods and comprehensions in methods, not yet inside nested `def` / `lambda` closures within methods, and reading `__class__` as a free variable is not yet synthesized by the compiler.
+- **Attribute reads vs direct calls on built-in descriptors**: `super().__init__()`, `Cls.__init_subclass__()`, and `Cls.mro()` work as direct calls, whereas reading `super().__init__`, `Cls.__new__` (when not overridden), or `Cls.mro` via `getattr` raises `AttributeError`.
 - **Protocol dunders on `super()` do not fall back to `object`.** When attribute
     lookup on a `super()` object misses in all user-defined base classes, only
     `__init__`, `__new__`, and `__init_subclass__` dispatch to `object`. Built-in
