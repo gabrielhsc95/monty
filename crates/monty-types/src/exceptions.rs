@@ -417,6 +417,52 @@ pub enum ExcType {
     /// A direct `Exception` subclass, named `_csv.Error` as in CPython.
     #[strum(serialize = "_csv.Error")]
     CsvError,
+
+    // --- decimal module ---
+    // CPython's decimal signals form a multiple-inheritance hierarchy under
+    // `ArithmeticError`; [`Self::decimal_ancestors`] lists each one's bases.
+    /// `decimal.DecimalException`, the base of every decimal signal.
+    #[strum(serialize = "decimal.DecimalException")]
+    DecimalException,
+    /// `decimal.Clamped`: an exponent was changed to fit the representation.
+    #[strum(serialize = "decimal.Clamped")]
+    DecimalClamped,
+    /// `decimal.InvalidOperation`: an operation with no meaningful result.
+    #[strum(serialize = "decimal.InvalidOperation")]
+    DecimalInvalidOperation,
+    /// `decimal.ConversionSyntax`: a malformed numeric string.
+    #[strum(serialize = "decimal.ConversionSyntax")]
+    DecimalConversionSyntax,
+    /// `decimal.DivisionByZero`: a finite non-zero dividend divided by zero.
+    #[strum(serialize = "decimal.DivisionByZero")]
+    DecimalDivisionByZero,
+    /// `decimal.DivisionImpossible`: an integer quotient too long for the precision.
+    #[strum(serialize = "decimal.DivisionImpossible")]
+    DecimalDivisionImpossible,
+    /// `decimal.DivisionUndefined`: zero divided by zero.
+    #[strum(serialize = "decimal.DivisionUndefined")]
+    DecimalDivisionUndefined,
+    /// `decimal.Inexact`: a result was rounded and lost non-zero digits.
+    #[strum(serialize = "decimal.Inexact")]
+    DecimalInexact,
+    /// `decimal.InvalidContext`: an invalid context setting was detected.
+    #[strum(serialize = "decimal.InvalidContext")]
+    DecimalInvalidContext,
+    /// `decimal.Rounded`: a result was rounded, perhaps without losing digits.
+    #[strum(serialize = "decimal.Rounded")]
+    DecimalRounded,
+    /// `decimal.Subnormal`: a result's exponent fell below `Emin`.
+    #[strum(serialize = "decimal.Subnormal")]
+    DecimalSubnormal,
+    /// `decimal.Overflow`: a result's exponent exceeded `Emax`.
+    #[strum(serialize = "decimal.Overflow")]
+    DecimalOverflow,
+    /// `decimal.Underflow`: a subnormal result was rounded.
+    #[strum(serialize = "decimal.Underflow")]
+    DecimalUnderflow,
+    /// `decimal.FloatOperation`: floats and Decimals were mixed.
+    #[strum(serialize = "decimal.FloatOperation")]
+    DecimalFloatOperation,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -430,7 +476,7 @@ impl ExcType {
     /// Returns true if `self` would be caught by `except handler_type:`.
     #[must_use]
     pub fn is_subclass_of(self, handler_type: Self) -> bool {
-        if self == handler_type {
+        if self == handler_type || self.decimal_ancestors().contains(&handler_type) {
             return true;
         }
         match handler_type {
@@ -479,48 +525,57 @@ impl ExcType {
         }
     }
 
+    /// Every base of a `decimal` exception below `Exception`, in CPython's MRO order;
+    /// empty for every other type.
+    ///
+    /// The decimal signals inherit from several classes at once (`DivisionByZero` is
+    /// also a `ZeroDivisionError`, `Underflow` is `Inexact`, `Rounded` and `Subnormal`).
+    #[must_use]
+    pub fn decimal_ancestors(self) -> &'static [Self] {
+        const BASE: &[ExcType] = &[ExcType::DecimalException, ExcType::ArithmeticError];
+        const INVALID: &[ExcType] = &[
+            ExcType::DecimalInvalidOperation,
+            ExcType::DecimalException,
+            ExcType::ArithmeticError,
+        ];
+        match self {
+            Self::DecimalException => &[Self::ArithmeticError],
+            Self::DecimalClamped
+            | Self::DecimalInvalidOperation
+            | Self::DecimalInexact
+            | Self::DecimalRounded
+            | Self::DecimalSubnormal => BASE,
+            Self::DecimalConversionSyntax | Self::DecimalDivisionImpossible | Self::DecimalInvalidContext => INVALID,
+            Self::DecimalDivisionUndefined => &[
+                Self::DecimalInvalidOperation,
+                Self::DecimalException,
+                Self::ZeroDivisionError,
+                Self::ArithmeticError,
+            ],
+            Self::DecimalDivisionByZero => &[Self::DecimalException, Self::ZeroDivisionError, Self::ArithmeticError],
+            Self::DecimalOverflow => &[
+                Self::DecimalInexact,
+                Self::DecimalRounded,
+                Self::DecimalException,
+                Self::ArithmeticError,
+            ],
+            Self::DecimalUnderflow => &[
+                Self::DecimalInexact,
+                Self::DecimalRounded,
+                Self::DecimalSubnormal,
+                Self::DecimalException,
+                Self::ArithmeticError,
+            ],
+            Self::DecimalFloatOperation => &[Self::DecimalException, Self::ArithmeticError, Self::TypeError],
+            _ => &[],
+        }
+    }
+
     /// Returns the immediate parent exception type in the exception hierarchy,
     /// or `None` for `BaseException` (whose parent is `object`).
     #[must_use]
     pub fn parent(self) -> Option<Self> {
-        match self {
-            Self::BaseException => None,
-            Self::Exception | Self::KeyboardInterrupt | Self::SystemExit => Some(Self::BaseException),
-            Self::KeyError | Self::IndexError => Some(Self::LookupError),
-            Self::LookupError => Some(Self::Exception),
-            Self::ZeroDivisionError | Self::OverflowError => Some(Self::ArithmeticError),
-            Self::ArithmeticError => Some(Self::Exception),
-            Self::RecursionError | Self::NotImplementedError => Some(Self::RuntimeError),
-            Self::RuntimeError => Some(Self::Exception),
-            Self::FrozenInstanceError => Some(Self::AttributeError),
-            Self::AttributeError => Some(Self::Exception),
-            Self::UnboundLocalError => Some(Self::NameError),
-            Self::NameError => Some(Self::Exception),
-            Self::UnicodeDecodeError
-            | Self::UnicodeEncodeError
-            | Self::JsonDecodeError
-            | Self::TomlDecodeError
-            | Self::BinasciiError => Some(Self::ValueError),
-            Self::ValueError => Some(Self::Exception),
-            Self::ModuleNotFoundError => Some(Self::ImportError),
-            Self::ImportError => Some(Self::Exception),
-            Self::FileNotFoundError
-            | Self::FileExistsError
-            | Self::IsADirectoryError
-            | Self::NotADirectoryError
-            | Self::PermissionError
-            | Self::TimeoutError
-            | Self::UnsupportedOperation => Some(Self::OSError),
-            Self::OSError => Some(Self::Exception),
-            Self::AssertionError
-            | Self::MemoryError
-            | Self::StopIteration
-            | Self::SyntaxError
-            | Self::TypeError
-            | Self::RePatternError
-            | Self::BinasciiIncomplete
-            | Self::CsvError => Some(Self::Exception),
-        }
+        self.direct_bases().first().copied()
     }
 
     /// Returns the direct bases of this exception type.
@@ -532,6 +587,20 @@ impl ExcType {
         match self {
             Self::BaseException => &[],
             Self::UnsupportedOperation => &[Self::OSError, Self::ValueError],
+            Self::DecimalDivisionUndefined => &[Self::DecimalInvalidOperation, Self::ZeroDivisionError],
+            Self::DecimalDivisionByZero => &[Self::DecimalException, Self::ZeroDivisionError],
+            Self::DecimalOverflow => &[Self::DecimalInexact, Self::DecimalRounded],
+            Self::DecimalUnderflow => &[Self::DecimalInexact, Self::DecimalRounded, Self::DecimalSubnormal],
+            Self::DecimalFloatOperation => &[Self::DecimalException, Self::TypeError],
+            Self::DecimalException => &[Self::ArithmeticError],
+            Self::DecimalClamped
+            | Self::DecimalInvalidOperation
+            | Self::DecimalInexact
+            | Self::DecimalRounded
+            | Self::DecimalSubnormal => &[Self::DecimalException],
+            Self::DecimalConversionSyntax | Self::DecimalDivisionImpossible | Self::DecimalInvalidContext => {
+                &[Self::DecimalInvalidOperation]
+            }
             Self::Exception | Self::KeyboardInterrupt | Self::SystemExit => &[Self::BaseException],
             Self::KeyError | Self::IndexError => &[Self::LookupError],
             Self::LookupError => &[Self::Exception],
@@ -581,6 +650,14 @@ impl ExcType {
                 Self::Exception,
                 Self::BaseException,
             ]
+        } else if !self.decimal_ancestors().is_empty() {
+            let mut list = vec![self];
+            for ancestor in self.decimal_ancestors() {
+                list.push(*ancestor);
+            }
+            list.push(Self::Exception);
+            list.push(Self::BaseException);
+            list
         } else {
             let mut list = vec![self];
             let mut cur = self.parent();

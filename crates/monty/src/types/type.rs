@@ -22,7 +22,7 @@ use crate::{
         Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         class::validate_init_subclass_args,
-        complex, date, datetime,
+        complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
@@ -329,6 +329,19 @@ pub enum Type {
     CsvDialect,
     /// `super`, the proxy type created by `super(...)`.
     Super,
+    /// `decimal.Decimal`.
+    #[strum(serialize = "decimal.Decimal")]
+    Decimal,
+    /// `decimal.Context`.
+    #[strum(serialize = "decimal.Context")]
+    DecimalContext,
+    /// The type of a context's `flags` / `traps`; CPython defines it in Python, so
+    /// its name carries no module.
+    #[strum(serialize = "SignalDict")]
+    DecimalSignalDict,
+    /// The manager `decimal.localcontext()` returns.
+    #[strum(serialize = "decimal.ContextManager")]
+    DecimalContextManager,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -657,6 +670,12 @@ impl Type {
             (Self::Complex, Some(StaticStrings::FromNumber)) => {
                 complex::class_from_number(vm, args).map(CallResult::Value)
             }
+            (Self::Decimal, Some(StaticStrings::FromNumber)) => {
+                decimal::py::class_from_number(vm, args).map(CallResult::Value)
+            }
+            (Self::Decimal, _) if vm.interns.get_str(method_id) == "from_float" => {
+                decimal::py::class_from_float(vm, args).map(CallResult::Value)
+            }
             (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
@@ -936,6 +955,8 @@ impl Type {
             Self::CsvDictWriter => csv::dict_writer_init(vm, args),
             Self::CsvDialect => csv::dialect_init(vm, args),
             Self::Super => super_::builtin_super(vm, args),
+            Self::Decimal => decimal::py::init(vm, args),
+            Self::DecimalContext => decimal::py_context::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),
