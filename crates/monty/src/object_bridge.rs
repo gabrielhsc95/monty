@@ -1159,6 +1159,9 @@ fn repr_node(value: &Value, vm: &mut VM<'_>) -> MontyNode {
             MontyNode::Repr(s.to_str(vm).map(str::to_owned).unwrap_or_default())
         }
         Err(e) => {
+            if matches!(e, RunError::Exc(_)) {
+                vm.clear_unwinding_exception();
+            }
             let ty = value.py_type_name(vm);
             let msg = match &e {
                 RunError::Internal(s) => s.to_string(),

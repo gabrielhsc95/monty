@@ -2201,3 +2201,60 @@ Base = type('Base', (), ns)
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
+
+#[test]
+fn custom_exception_caught_does_not_execute_str_or_leak_unwinding_exception() {
+    run(r"
+str_calls = 0
+
+class CustomErr(Exception):
+    def __str__(self):
+        global str_calls
+        str_calls += 1
+        return 'formatted'
+
+class Trigger:
+    def __repr__(self):
+        raise CustomErr()
+
+try:
+    repr(Trigger())
+except CustomErr:
+    pass
+
+assert str_calls == 0
+");
+}
+
+#[test]
+fn custom_exception_unhandled_str_memory_or_timeout_propagates_fatal() {
+    let code = r"
+class MemEscape(Exception):
+    def __str__(self):
+        _ = [0] * 100_000_000
+        return 'boom'
+
+raise MemEscape()
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_memory(1024 * 1024);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err());
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+
+    let code_timeout = r"
+class TimeoutEscape(Exception):
+    def __str__(self):
+        while True:
+            pass
+
+raise TimeoutEscape()
+";
+    let mut ex = MontyRun::new(code_timeout.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_nanos(1));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err());
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
