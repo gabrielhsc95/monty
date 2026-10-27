@@ -580,7 +580,8 @@ impl ExcType {
 
     /// Returns the direct bases of this exception type.
     ///
-    /// In CPython, `io.UnsupportedOperation` inherits from both `OSError` and `ValueError`.
+    /// In CPython, `io.UnsupportedOperation` and several `decimal` exception classes
+    /// inherit from multiple base exceptions.
     /// All other exception types have a single parent (or none for `BaseException`).
     #[must_use]
     pub const fn direct_bases(self) -> &'static [Self] {

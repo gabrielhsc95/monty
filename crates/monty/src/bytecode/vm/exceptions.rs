@@ -301,8 +301,12 @@ impl VM<'_> {
 
     /// Creates an `AssertionError` raised at the current source position.
     fn assertion_error(&self, msg: Option<String>) -> RunError {
-        let frame = (!self.current_frame_is_frozen())
-            .then(|| Box::new(RawStackFrame::from_raise(self.current_position(), self.current_frame_name())));
+        let frame = (!self.current_frame_is_frozen()).then(|| {
+            Box::new(RawStackFrame::from_raise(
+                self.current_position(),
+                self.current_frame_name(),
+            ))
+        });
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
             frame,

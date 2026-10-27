@@ -25,6 +25,7 @@ use crate::{
     types::{
         GenericAlias, LazyHeapSet, List, LongInt, Property, PyTrait, Type, Union, allocate_string,
         bytes::PyBytes,
+        class::ClassBase,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
@@ -531,9 +532,19 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Builtin(Builtins::Type(ty)) if let EitherStr::Interned(id) = attr => ty.call_class_method(*id, args, vm),
-            Self::Builtin(Builtins::ExcType(exc_type)) if let EitherStr::Interned(id) = attr => {
-                let method = vm.interns.get_str(*id);
+            Self::Builtin(Builtins::Type(ty)) => {
+                let method = attr.as_str(vm.interns);
+                if let EitherStr::Interned(id) = attr {
+                    ty.call_class_method(*id, args, vm)
+                } else if let Some(id) = vm.interns.get_string_id_by_name(method) {
+                    ty.call_class_method(id, args, vm)
+                } else {
+                    args.drop_with(vm);
+                    Err(ExcType::attribute_error_type(&ty.to_string(), method))
+                }
+            }
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                let method = attr.as_str(vm.interns);
                 if method == "mro" {
                     let type_name: &'static str = (*exc_type).into();
                     let pos = args.into_pos_only(&format!("{type_name}.mro"), vm.heap)?;
@@ -565,7 +576,10 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                             Value::Ref(id) => {
                                 if let HeapData::Class(cls) = vm.heap.get(*id) {
                                     let name = cls.name().as_str(vm.interns).to_owned();
-                                    let ok = cls.base_exception().is_some_and(|b| b.is_subclass_of(*exc_type));
+                                    let ok = cls
+                                        .mro()
+                                        .iter()
+                                        .any(|b| matches!(b, ClassBase::BuiltinExc(e) if e.is_subclass_of(*exc_type)));
                                     (ok, name)
                                 } else {
                                     (false, target_val.py_type_name(vm).into_owned())
@@ -592,8 +606,8 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     Err(ExcType::attribute_error_type(type_name, method))
                 }
             }
-            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) if let EitherStr::Interned(id) = attr => {
-                let method = vm.interns.get_str(*id);
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                let method = attr.as_str(vm.interns);
                 if method == "mro" {
                     let pos = args.into_pos_only("type.mro", vm.heap)?;
                     if !pos.as_slice().is_empty() {

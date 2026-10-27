@@ -80,6 +80,11 @@ impl Class {
         })
     }
 
+    /// Whether this class is an exception subclass (derives from a built-in exception).
+    pub(crate) fn is_exception_class(&self) -> bool {
+        self.base_exception().is_some()
+    }
+
     /// Returns the method resolution order (base classes in C3 linearization order).
     pub(crate) fn mro(&self) -> &[ClassBase] {
         &self.mro

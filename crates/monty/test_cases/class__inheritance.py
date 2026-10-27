@@ -1064,6 +1064,26 @@ assert issubclass(Exception, object)
 assert not issubclass(Child, Exception)
 assert not isinstance(Child(), Exception)
 
+class MultiExc(KeyError, AttributeError):
+    pass
+
+assert issubclass(MultiExc, KeyError)
+assert issubclass(MultiExc, AttributeError)
+assert issubclass(MultiExc, LookupError)
+assert issubclass(MultiExc, Exception)
+
+me = MultiExc('missing')
+assert isinstance(me, KeyError)
+assert isinstance(me, AttributeError)
+assert me.args == ('missing',)
+
+me.args = [1, 2]
+assert me.args == (1, 2)
+assert type(me.args) is tuple
+
+object.__setattr__(me, 'args', (3, 4))
+assert me.args == (3, 4)
+
 Point = namedtuple('Point', ['x'])
 OtherPoint = namedtuple('Point', ['x'])
 assert issubclass(Point, Point)

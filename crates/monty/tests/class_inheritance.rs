@@ -2057,8 +2057,8 @@ assert repr(c_exc) == 'CycleExc(...)'
 ");
 
     run_err(
-        "class CycleExc(Exception): pass\nc = CycleExc()\nc.args = 'not a tuple'\nrepr(c)",
-        "exception args must be a tuple",
+        "class CycleExc(Exception): pass\nc = CycleExc()\nc.args = 123",
+        "'int' object is not iterable",
     );
 
     run_err(
@@ -2257,4 +2257,120 @@ raise TimeoutEscape()
     assert!(result.is_err());
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+#[test]
+fn multi_base_builtin_exception_mro_and_subtyping() {
+    run(r"
+import decimal
+
+class CustomDivZero(decimal.DivisionByZero):
+    pass
+
+assert issubclass(CustomDivZero, decimal.DivisionByZero)
+assert issubclass(CustomDivZero, decimal.DecimalException)
+assert issubclass(CustomDivZero, ZeroDivisionError)
+assert issubclass(CustomDivZero, ArithmeticError)
+assert issubclass(CustomDivZero, Exception)
+
+try:
+    raise CustomDivZero('division')
+except ZeroDivisionError as err:
+    assert str(err) == 'division'
+except Exception:
+    assert False, 'should have been caught by ZeroDivisionError'
+else:
+    assert False, 'should have raised'
+");
+}
+
+#[test]
+fn multiple_builtin_exception_bases_instantiation_and_new() {
+    run(r"
+class DualErr(KeyError, AttributeError):
+    pass
+
+assert issubclass(DualErr, KeyError)
+assert issubclass(DualErr, AttributeError)
+
+# Direct instantiation
+err = DualErr('test')
+assert isinstance(err, KeyError)
+assert isinstance(err, AttributeError)
+
+# __new__ dispatch through either base
+err_attr = AttributeError.__new__(DualErr, 'attr')
+assert isinstance(err_attr, DualErr)
+assert isinstance(err_attr, AttributeError)
+assert isinstance(err_attr, KeyError)
+
+err_key = KeyError.__new__(DualErr, 'key')
+assert isinstance(err_key, DualErr)
+assert isinstance(err_key, KeyError)
+assert isinstance(err_key, AttributeError)
+");
+}
+
+#[test]
+fn custom_key_error_formats_with_single_quote_repr() {
+    run(r#"
+class CustomKeyErr(ValueError, KeyError):
+    pass
+
+err = CustomKeyErr('my_missing_key')
+assert str(err) == "'my_missing_key'"
+"#);
+}
+
+#[test]
+fn exception_args_coerced_to_tuple() {
+    run(r"
+class MyErr(Exception):
+    pass
+
+err = MyErr(1, 2)
+assert err.args == (1, 2)
+assert type(err.args) is tuple
+
+err.args = [3, 4]
+assert err.args == (3, 4)
+assert type(err.args) is tuple
+
+err.args = (x for x in [5, 6])
+assert err.args == (5, 6)
+assert type(err.args) is tuple
+
+object.__setattr__(err, 'args', [7, 8])
+assert err.args == (7, 8)
+assert type(err.args) is tuple
+
+try:
+    err.args = 123
+except TypeError as e:
+    assert 'iterable' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+try:
+    object.__setattr__(err, 'args', 123)
+except TypeError as e:
+    assert 'iterable' in str(e)
+else:
+    assert False, 'expected TypeError'
+");
+}
+
+#[test]
+fn custom_exception_has_custom_type_name_and_summary() {
+    let code = r"
+class SpecialFailure(ValueError):
+    pass
+
+raise SpecialFailure('bad value')
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::ValueError);
+    assert_eq!(err.custom_type_name(), Some("SpecialFailure"));
+    assert_eq!(err.summary(), "SpecialFailure: bad value");
 }

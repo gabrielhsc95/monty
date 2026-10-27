@@ -212,6 +212,10 @@ class MontyError(Exception):
     def exception(self) -> BaseException:
         """Returns the inner exception as a Python exception object."""
 
+    @property
+    def custom_type_name(self) -> str | None:
+        """Returns the custom type name for user-defined exception subclasses, if any."""
+
     def __str__(self) -> str:
         """Returns the exception message."""
 

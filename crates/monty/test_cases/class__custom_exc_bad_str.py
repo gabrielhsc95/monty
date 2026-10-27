@@ -1,6 +1,6 @@
 class BrokenStrError(Exception):
     def __str__(self):
-        raise RuntimeError("str failed")
+        raise RuntimeError('str failed')
 
 
 raise BrokenStrError()

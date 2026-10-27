@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value, class::ClassBase};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -157,11 +157,25 @@ impl<'h> HeapReadMut<'h, Instance> {
             [name, value].drop_with(vm);
             return Err(exc);
         }
-        if let Some(text) = name.as_either_str(vm.heap)
-            && text.as_str(vm.interns) == "__class__"
-        {
-            [name, value].drop_with(vm);
-            return Err(ExcType::type_error("__class__ assignment not supported"));
+        if let Some(text) = name.as_either_str(vm.heap) {
+            let attr_name = text.as_str(vm.interns);
+            if attr_name == "__class__" {
+                [name, value].drop_with(vm);
+                return Err(ExcType::type_error("__class__ assignment not supported"));
+            }
+            if attr_name == "args" {
+                let is_exc = if let HeapData::Class(cls) = vm.heap.get(class_id) {
+                    cls.is_exception_class()
+                } else {
+                    false
+                };
+                if is_exc {
+                    let mut name_guard = DropGuard::new(name, vm);
+                    let coerced = coerce_exception_args(value, name_guard.as_parts_mut().1)?;
+                    let (name, vm) = name_guard.into_parts();
+                    return self.set_attr_unchecked(name, coerced, vm);
+                }
+            }
         }
         self.set_attr_unchecked(name, value, vm)
     }
@@ -178,6 +192,21 @@ impl<'h> HeapReadMut<'h, Instance> {
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
+}
+
+/// Coerces assigned exception `args` into a `Tuple`, matching Python's descriptor behavior.
+pub(crate) fn coerce_exception_args(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    if let Value::Ref(id) = &value
+        && matches!(vm.heap.get(*id), HeapData::Tuple(_))
+    {
+        return Ok(value);
+    }
+    let mut guard = DropGuard::new(value, vm);
+    let (val_ref, vm_mut) = guard.as_parts();
+    let items = super::iter::collect_iterable(val_ref, vm_mut)?;
+    let (old, vm) = guard.into_parts();
+    old.drop_with(vm);
+    Ok(super::allocate_tuple(items.into(), vm.heap))
 }
 
 /// Defines the one-argument numeric slots, sharing binding and `NotImplemented` handling.
@@ -741,8 +770,12 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
     } else {
         let class_id = instance_class(self_id, vm);
         if let HeapData::Class(cls) = vm.heap.get(class_id)
-            && let Some(base_exc) = cls.base_exception()
+            && cls.base_exception().is_some()
         {
+            let is_key_error = cls
+                .mro()
+                .iter()
+                .any(|b| matches!(b, ClassBase::BuiltinExc(ExcType::KeyError)));
             let mut guard = vm.recursion_guard()?;
             let vm = &mut *guard;
             let args = instance_attr(self_id, "args", vm).unwrap_or(Value::None);
@@ -755,7 +788,7 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
                 [item] => {
                     let item = item.clone_with_heap(vm.heap);
                     defer_drop!(item, vm);
-                    if base_exc == ExcType::KeyError {
+                    if is_key_error {
                         item.py_repr(vm)
                     } else {
                         item.py_str(vm)

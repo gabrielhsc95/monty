@@ -391,12 +391,7 @@ fn compute_c3_mro(bases: &[ClassBase], base_names: &[&str], heap: &Heap) -> RunR
                 }
             }
             ClassBase::BuiltinExc(exc) => {
-                let mut seq = Vec::new();
-                let mut cur = Some(exc);
-                while let Some(e) = cur {
-                    seq.push(ClassBase::BuiltinExc(e));
-                    cur = e.parent();
-                }
+                let mut seq: Vec<ClassBase> = exc.mro().iter().copied().map(ClassBase::BuiltinExc).collect();
                 seq.push(ClassBase::Object);
                 sequences.push(seq);
             }
