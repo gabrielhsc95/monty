@@ -998,7 +998,7 @@ try:
     type.mro(1)
     assert False, "expected TypeError"
 except TypeError as e:
-    assert "type.mro() takes no arguments (1 given)" in str(e)
+    assert "descriptor 'mro' for 'type' objects doesn't apply to a 'int' object" in str(e)
 
 # Reassignment protection
 try:
@@ -1128,18 +1128,26 @@ try:
 except TypeError as e:
     assert str(e) == "object.__new__(): not enough arguments"
 
-# Calling object.__new__ with extra arguments or kwargs on non-exception classes
+# Calling object.__new__ with extra arguments when __new__ is overridden
+class PlainWithNew:
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls)
+
 try:
-    object.__new__(Plain, 1)
+    object.__new__(PlainWithNew, 1)
     assert False, "expected TypeError"
 except TypeError as e:
     assert str(e) == "object.__new__() takes exactly one argument (the type to instantiate)"
 
 try:
-    object.__new__(Plain, x=1)
+    object.__new__(PlainWithNew, x=1)
     assert False, "expected TypeError"
 except TypeError as e:
     assert str(e) == "object.__new__() takes exactly one argument (the type to instantiate)"
+
+# When __init__ is overridden without overriding __new__, extra args are accepted
+p_extra = object.__new__(Plain, 1, x=2)
+assert isinstance(p_extra, Plain)
 
 # Calling __new__ on built-in exception types
 v1 = ValueError.__new__(ValueError)
@@ -1927,7 +1935,10 @@ assert not issubclass(MyCustom, int)
         "type.nonexistent_attr",
         "type object 'type' has no attribute 'nonexistent_attr'",
     );
-    run_err("type.mro(1)", "type.mro() takes no arguments (1 given)");
+    run_err(
+        "type.mro(1)",
+        "descriptor 'mro' for 'type' objects doesn't apply to a 'int' object",
+    );
     run_err(
         "ValueError.__new__(TypeError)",
         "ValueError.__new__(TypeError): TypeError is not a subtype of ValueError",
@@ -1974,7 +1985,7 @@ assert d.val == 42
 
 class E(Exception):
     def __new__(cls, *args, **kwargs):
-        return object.__new__(cls)
+        return super().__new__(cls)
 
 e = E('hello', 100)
 assert e.args == ('hello', 100)
@@ -1985,9 +1996,9 @@ assert e.args == ('hello', 100)
 class E(Exception):
     def __new__(cls, *args, **kwargs):
         return object.__new__(cls)
-E(x=1)
+E()
 ",
-        "E() takes no keyword arguments",
+        "object.__new__(E) is not safe, use E.__new__()",
     );
 
     run_err(
@@ -1996,9 +2007,9 @@ class E2(Exception):
     def __new__(cls, *args, **kwargs):
         dyn = type('DynExc', (cls,), {})
         return object.__new__(dyn)
-E2(x=1)
+E2()
 ",
-        "DynExc() takes no keyword arguments",
+        "object.__new__(DynExc) is not safe, use DynExc.__new__()",
     );
 
     run_err(
@@ -2009,10 +2020,7 @@ E2(x=1)
         "object.__new__(type)",
         "object.__new__(type) is not safe, use type.__new__()",
     );
-    run_err(
-        "class A: pass\nobject.__new__(A, 1, 2)",
-        "object.__new__() takes exactly one argument",
-    );
+    run_err("class A: pass\nobject.__new__(A, 1, 2)", "A() takes no arguments");
 }
 
 #[test]
@@ -2373,4 +2381,274 @@ raise SpecialFailure('bad value')
     assert_eq!(err.exc_type(), ExcType::ValueError);
     assert_eq!(err.custom_type_name(), Some("SpecialFailure"));
     assert_eq!(err.summary(), "SpecialFailure: bad value");
+}
+
+#[test]
+fn descriptor_parity_and_hasattr() {
+    run(r"
+class A:
+    pass
+
+class B(A):
+    def test_super(self):
+        s = super()
+        assert hasattr(s, '__init__')
+        assert hasattr(s, '__init_subclass__')
+        assert hasattr(s, '__new__')
+        assert s.__init__() is None
+        assert s.__init_subclass__() is None
+
+        # object.__init__ extra args error
+        try:
+            s.__init__(1, 2)
+        except TypeError as e:
+            assert 'takes exactly one argument' in str(e)
+        else:
+            assert False, 'expected TypeError'
+
+b = B()
+b.test_super()
+
+# Class descriptors
+assert hasattr(A, 'mro')
+assert hasattr(A, '__init_subclass__')
+assert hasattr(A, '__new__')
+assert hasattr(A, '__init__')
+
+assert A.mro() == [A, object]
+assert type.mro(A) == [A, object]
+assert A.__init_subclass__() is None
+
+a = A.__new__(A)
+assert isinstance(a, A)
+assert A.__init__(a) is None
+
+# Instance descriptors
+inst = A()
+assert hasattr(inst, '__init__')
+assert hasattr(inst, '__init_subclass__')
+assert hasattr(inst, '__new__')
+assert not hasattr(inst, 'mro')
+
+assert inst.__init__() is None
+assert inst.__init_subclass__() is None
+a2 = inst.__new__(A)
+assert isinstance(a2, A)
+
+# Subclass hook binding
+hook_called = []
+class HookBase:
+    def __init_subclass__(cls, **kwargs):
+        hook_called.append((cls, kwargs))
+
+assert hasattr(HookBase, '__init_subclass__')
+h = HookBase()
+assert hasattr(h, '__init_subclass__')
+h.__init_subclass__(x=42)
+assert hook_called == [(HookBase, {'x': 42})]
+
+# Inherited __init_subclass__ called directly and via getattr on subclass
+class HookChild(HookBase):
+    pass
+
+hook_called.clear()
+HookChild.__init_subclass__(y=99)
+fn_hook = HookChild.__init_subclass__
+fn_hook(z=100)
+assert hook_called == [(HookChild, {'y': 99}), (HookChild, {'z': 100})]
+
+# Custom mro method on user class takes precedence over type.mro on class/instance
+class CustomMro:
+    def mro(self):
+        return 'instance_mro'
+
+assert CustomMro().mro() == 'instance_mro'
+assert CustomMro.mro(CustomMro()) == 'instance_mro'
+assert type.mro(CustomMro) == [CustomMro, object]
+
+# Exception subclass __new__ and __init__ descriptor parity
+class SubExc(ValueError):
+    pass
+
+fn_ve_new = ValueError.__new__
+e1 = fn_ve_new(SubExc, 'a', 1)
+assert isinstance(e1, SubExc) and e1.args == ('a', 1)
+
+fn_sub_new = SubExc.__new__
+e2 = fn_sub_new(SubExc, 'b')
+assert isinstance(e2, SubExc) and e2.args == ('b',)
+
+e3 = SubExc.__new__(SubExc, 'c')
+assert isinstance(e3, SubExc) and e3.args == ('c',)
+e4 = e3.__new__(SubExc, 'd')
+assert isinstance(e4, SubExc) and e4.args == ('d',)
+
+fn_init = e4.__init__
+fn_init('updated', 2)
+assert e4.args == ('updated', 2)
+
+class SubExcSuper(SubExc):
+    def __init__(self, msg):
+        fn = super().__init__
+        fn(msg, 'via_super')
+
+    def make(cls):
+        fn = super().__new__
+        return fn(cls, 'made')
+
+e5 = SubExcSuper('hi')
+assert e5.args == ('hi', 'via_super')
+e6 = SubExcSuper.make(SubExcSuper)
+assert isinstance(e6, SubExcSuper) and e6.args == ('made',)
+");
+}
+
+#[test]
+fn dynamic_annotations_isolation() {
+    run(r"
+class AnnBase:
+    x: int
+    y: str
+
+assert AnnBase.__annotations__ == {'x': 'int', 'y': 'str'}
+
+DynSub = type('DynSub', (AnnBase,), {})
+a1 = DynSub.__annotations__
+a2 = DynSub.__annotations__
+assert a1 == {}
+assert a1 is a2
+a1['z'] = 'bool'
+assert DynSub.__annotations__ == {'z': 'bool'}
+# Confirm base annotations are untouched
+assert AnnBase.__annotations__ == {'x': 'int', 'y': 'str'}
+");
+}
+
+#[test]
+fn class_mro_write_protection() {
+    run(r"
+class A:
+    pass
+
+try:
+    A.__mro__ = ()
+except AttributeError as e:
+    assert 'attribute \'__mro__\' of \'type\' objects is not writable' in str(e)
+else:
+    assert False, 'expected AttributeError'
+");
+}
+
+#[test]
+fn object_new_safety_and_excess_args() {
+    run(r"
+# object.__new__(object)
+try:
+    object.__new__(object)
+except TypeError as e:
+    assert 'cannot create \'object\' instances' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Builtin exception rejection
+try:
+    object.__new__(ValueError)
+except TypeError as e:
+    assert 'object.__new__(ValueError) is not safe, use ValueError.__new__()' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Custom exception rejection
+class MyCustomExc(Exception):
+    pass
+
+try:
+    object.__new__(MyCustomExc)
+except TypeError as e:
+    assert 'object.__new__(MyCustomExc) is not safe, use MyCustomExc.__new__()' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Excess args when neither __new__ nor __init__ is overridden
+class Bare:
+    pass
+
+try:
+    object.__new__(Bare, 1, 2)
+except TypeError as e:
+    assert 'Bare() takes no arguments' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Excess args when __new__ is overridden
+class CustomNew:
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls)
+
+try:
+    object.__new__(CustomNew, 1)
+except TypeError as e:
+    assert 'object.__new__() takes exactly one argument' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Excess args when __init__ is overridden (allowed!)
+class CustomInit:
+    def __init__(self, x, y=10):
+        self.x = x
+        self.y = y
+
+inst = object.__new__(CustomInit, 1, y=20)
+assert isinstance(inst, CustomInit)
+assert not hasattr(inst, 'x')  # __init__ hasn't run yet
+inst.__init__(1, y=20)
+assert inst.x == 1
+assert inst.y == 20
+");
+}
+
+#[test]
+fn dataclass_frozen_inheritance_mismatch() {
+    run(r"
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class FrozenBase:
+    x: int
+
+try:
+    @dataclass(frozen=False)
+    class NonFrozenSub(FrozenBase):
+        y: int
+except TypeError as e:
+    assert 'cannot inherit non-frozen dataclass from a frozen one' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+@dataclass(frozen=False)
+class NonFrozenBase:
+    x: int
+
+try:
+    @dataclass(frozen=True)
+    class FrozenSub(NonFrozenBase):
+        y: int
+except TypeError as e:
+    assert 'cannot inherit frozen dataclass from a non-frozen one' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Multi-level inheritance through intermediate plain class
+class Intermediate(FrozenBase):
+    pass
+
+try:
+    @dataclass(frozen=False)
+    class Child(Intermediate):
+        z: int
+except TypeError as e:
+    assert 'cannot inherit non-frozen dataclass from a frozen one' in str(e)
+else:
+    assert False, 'expected TypeError'
+");
 }

@@ -207,3 +207,38 @@ assert grandchild_rec.read() == 18
 assert grandchild_rec.explicit_read() == 4
 assert super(SuperReceiverGrandchild, grandchild_rec).read() == 8
 assert super(SuperReceiverChild, grandchild_rec).read() == 4
+
+
+# --- Descriptor parity on super() (__init__, __init_subclass__, __new__) ---
+class SuperDescCheck:
+    def check(self):
+        s = super()
+        assert hasattr(s, '__init__')
+        assert hasattr(s, '__init_subclass__')
+        assert hasattr(s, '__new__')
+        fn_init = s.__init__
+        assert fn_init() is None
+        fn_sub = s.__init_subclass__
+        assert fn_sub() is None
+        fn_new = s.__new__
+        other = fn_new(SuperDescCheck)
+        assert isinstance(other, SuperDescCheck)
+
+
+SuperDescCheck().check()
+
+
+class SuperExcCheck(ValueError):
+    def __init__(self, msg):
+        fn = super().__init__
+        fn(msg, 'extra')
+
+    def allocate(cls):
+        fn = super().__new__
+        return fn(cls, 'allocated')
+
+
+sec = SuperExcCheck('boom')
+assert sec.args == ('boom', 'extra')
+sec2 = SuperExcCheck.allocate(SuperExcCheck)
+assert isinstance(sec2, SuperExcCheck) and sec2.args == ('allocated',)

@@ -2,11 +2,21 @@ use std::fmt::Write;
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, List, PyTrait, Type, attribute_name_value, tuple::allocate_tuple};
+use super::{
+    Dict, LazyHeapSet, PyTrait, Type, attribute_name_value,
+    instance::{BoundMethod, is_method_value},
+    tuple::allocate_tuple,
+};
 use crate::{
     args::ArgValues,
     boundary_uuid::create_uuid,
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::{
+        Builtins, BuiltinsFunctions,
+        object_init::{builtin_exception_init, builtin_object_init},
+        object_init_subclass::builtin_object_init_subclass,
+        object_new::{builtin_exception_new, builtin_object_new},
+        type_mro::builtin_type_mro,
+    },
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -190,11 +200,16 @@ impl<'h> HeapReadMut<'h, Class> {
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
     pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if let Some(name_str) = name.as_either_str(vm.heap)
-            && matches!(name_str.as_str(vm.interns), "__class__" | "__bases__")
-        {
-            [name, value].drop_with(vm);
-            return Err(ExcType::type_error("type controls __class__ and __bases__"));
+        if let Some(name_str) = name.as_either_str(vm.heap) {
+            let s = name_str.as_str(vm.interns);
+            if matches!(s, "__class__" | "__bases__") {
+                [name, value].drop_with(vm);
+                return Err(ExcType::type_error("type controls __class__ and __bases__"));
+            }
+            if s == "__mro__" {
+                [name, value].drop_with(vm);
+                return Err(ExcType::attribute_error_not_writable("__mro__", "type"));
+            }
         }
         self.namespace_mut().set(name, value, vm)
     }
@@ -378,9 +393,88 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             return Ok(Some(CallResult::Value(tuple_val)));
         }
 
+        if attr_str == "__annotations__" {
+            if let Some(val) = self
+                .get(vm.heap)
+                .namespace()
+                .get_by_str("__annotations__", vm.heap, vm.interns)
+            {
+                return Ok(Some(CallResult::Value(val.clone_with_heap(vm.heap))));
+            }
+            let dict_id = vm.heap.allocate(HeapData::Dict(Dict::new()));
+            let mut dict_guard = DropGuard::new(Value::Ref(dict_id), vm);
+            let key = attribute_name_value(attr, dict_guard.ctx());
+            dict_guard.ctx().heap.inc_ref(dict_id);
+            let stored = Value::Ref(dict_id);
+            let old = self.namespace_mut().set(key, stored, dict_guard.ctx())?;
+            if let Some(old) = old {
+                old.drop_with(dict_guard.ctx());
+            }
+            let (dict_val, _) = dict_guard.into_parts();
+            return Ok(Some(CallResult::Value(dict_val)));
+        }
+
+        if attr_str == "__init_subclass__" {
+            if let Some(member) = self.get(vm.heap).mro_getattr("__init_subclass__", vm.heap, vm.interns) {
+                if is_method_value(&member, vm) {
+                    let self_id = self.id();
+                    vm.heap.inc_ref(self_id);
+                    let bound = BoundMethod {
+                        instance: Value::Ref(self_id),
+                        func: member,
+                    };
+                    let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+                    return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+                }
+                return Ok(Some(CallResult::Value(member)));
+            }
+            let self_id = self.id();
+            vm.heap.inc_ref(self_id);
+            let bound = BoundMethod {
+                instance: Value::Ref(self_id),
+                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+            };
+            let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+            return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+        }
+
         // Look up a member in the class namespace or its base classes (MRO).
         if let Some(val) = self.get(vm.heap).mro_getattr(attr_str, vm.heap, vm.interns) {
             return Ok(Some(CallResult::Value(val)));
+        }
+
+        if attr_str == "mro" {
+            let self_id = self.id();
+            vm.heap.inc_ref(self_id);
+            let bound = BoundMethod {
+                instance: Value::Ref(self_id),
+                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+            };
+            let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+            return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+        }
+
+        if attr_str == "__new__" {
+            if let Some(exc_type) = self.get(vm.heap).base_exception() {
+                let bound = BoundMethod {
+                    instance: Value::Builtin(Builtins::ExcType(exc_type)),
+                    func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
+                };
+                let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+                return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+            }
+            return Ok(Some(CallResult::Value(Value::Builtin(Builtins::Function(
+                BuiltinsFunctions::ObjectNew,
+            )))));
+        }
+
+        if attr_str == "__init__" {
+            let func = if self.get(vm.heap).is_exception_class() {
+                BuiltinsFunctions::ExceptionInit
+            } else {
+                BuiltinsFunctions::ObjectInit
+            };
+            return Ok(Some(CallResult::Value(Value::Builtin(Builtins::Function(func)))));
         }
 
         Err(ExcType::attribute_error_type(
@@ -391,15 +485,23 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
-        // `__name__` is a synthesized string, not a namespace member (see
-        // `py_getattr`), so calling it goes through the normal callable
-        // dispatch and raises CPython's `TypeError: 'str' object is not
-        // callable` rather than a spurious `AttributeError`.
-        if attr_str == "__name__" {
-            let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            let name_val = allocate_string(name, vm.heap);
-            defer_drop!(name_val, vm);
-            return vm.call_function(name_val, args);
+        // Synthesized / own-namespace-only attributes (`__name__`, `__annotations__`,
+        // etc.) resolve via `py_getattr` so calling them raises the value's own
+        // `TypeError` (or calls it if user-replaced) instead of walking `mro_getattr`.
+        if matches!(
+            attr_str,
+            "__name__" | "__class__" | "__bases__" | "__mro__" | "__annotations__"
+        ) {
+            let val = match self.py_getattr(attr, vm) {
+                Ok(Some(CallResult::Value(val))) => val,
+                Ok(_) => unreachable!("Class::py_getattr returns Some(Value)"),
+                Err(err) => {
+                    args.drop_with(vm);
+                    return Err(err);
+                }
+            };
+            defer_drop!(val, vm);
+            return vm.call_function(val, args);
         }
 
         // `Foo.method(args)` calls the member with the given args.
@@ -407,7 +509,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         // we prepend the class itself (self.id()) as the first argument.
         if let Some(member) = self.get(vm.heap).mro_getattr(attr_str, vm.heap, vm.interns) {
             defer_drop!(member, vm);
-            let call_args = if attr_str == "__init_subclass__" {
+            let call_args = if attr_str == "__init_subclass__" && is_method_value(member, vm) {
                 let self_id = self.id();
                 vm.heap.inc_ref(self_id);
                 args.prepend(Value::Ref(self_id))
@@ -418,26 +520,30 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         }
 
         if attr_str == "mro" {
-            let class_name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            let pos = args.into_pos_only(&format!("{class_name}.mro"), vm.heap)?;
-            if !pos.as_slice().is_empty() {
-                let count = pos.as_slice().len();
-                pos.drop_with(vm.heap);
-                return Err(ExcType::type_error(format!(
-                    "{class_name}.mro() takes no arguments ({count} given)"
-                )));
-            }
-            let class_id = self.id();
-            let mro = self.get(vm.heap).mro().to_vec();
-            let items = class_mro_values(class_id, &mro, vm.heap);
-            let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
-            return Ok(CallResult::Value(Value::Ref(list_id)));
+            let self_id = self.id();
+            vm.heap.inc_ref(self_id);
+            return builtin_type_mro(vm, args.prepend(Value::Ref(self_id))).map(CallResult::Value);
         }
 
         if attr_str == "__init_subclass__" {
-            let class_name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            validate_init_subclass_args(&class_name, args, vm.heap)?;
-            return Ok(CallResult::Value(Value::None));
+            let self_id = self.id();
+            vm.heap.inc_ref(self_id);
+            return builtin_object_init_subclass(vm, args.prepend(Value::Ref(self_id))).map(CallResult::Value);
+        }
+
+        if attr_str == "__new__" {
+            if let Some(exc_type) = self.get(vm.heap).base_exception() {
+                return builtin_exception_new(vm, args.prepend(Value::Builtin(Builtins::ExcType(exc_type))))
+                    .map(CallResult::Value);
+            }
+            return builtin_object_new(vm, args).map(CallResult::Value);
+        }
+
+        if attr_str == "__init__" {
+            if self.get(vm.heap).is_exception_class() {
+                return builtin_exception_init(vm, args).map(CallResult::Value);
+            }
+            return builtin_object_init(vm, args).map(CallResult::Value);
         }
 
         args.drop_with(vm);

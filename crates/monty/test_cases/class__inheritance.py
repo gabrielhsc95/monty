@@ -1064,8 +1064,10 @@ assert issubclass(Exception, object)
 assert not issubclass(Child, Exception)
 assert not isinstance(Child(), Exception)
 
+
 class MultiExc(KeyError, AttributeError):
     pass
+
 
 assert issubclass(MultiExc, KeyError)
 assert issubclass(MultiExc, AttributeError)
@@ -1117,5 +1119,82 @@ check_error(lambda: issubclass(), 'issubclass expected 2 arguments, got 0')
 check_error(lambda: issubclass(int), 'issubclass expected 2 arguments, got 1')
 check_error(lambda: issubclass(int, str, object), 'issubclass expected 2 arguments, got 3')
 check_error(lambda: issubclass(int, classinfo=int), 'issubclass() takes no keyword arguments')
+
+# === Stage 1.3: inherited __init_subclass__, __mro__ write guard, dynamic __annotations__, frozen dataclass ===
+hook_log = []
+
+
+class HookRoot:
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__()
+        hook_log.append((cls.__name__, kwargs))
+
+
+class HookMid(HookRoot):
+    pass
+
+
+hook_log.clear()
+HookMid.__init_subclass__(flag=1)
+fn_hook = HookMid.__init_subclass__
+fn_hook(flag=2)
+hm_inst = HookMid()
+hm_inst.__init_subclass__(flag=3)
+fn_inst_hook = hm_inst.__init_subclass__
+fn_inst_hook(flag=4)
+assert hook_log == [
+    ('HookMid', {'flag': 1}),
+    ('HookMid', {'flag': 2}),
+    ('HookMid', {'flag': 3}),
+    ('HookMid', {'flag': 4}),
+]
+
+try:
+    HookMid.__mro__ = ()
+    assert False, 'expected AttributeError writing __mro__'
+except AttributeError as exc:
+    assert str(exc) == "attribute '__mro__' of 'type' objects is not writable"
+
+DynChild = type('DynChild', (HookRoot,), {})
+ann1 = DynChild.__annotations__
+ann2 = DynChild.__annotations__
+assert ann1 == {}
+assert ann1 is ann2
+ann1['added'] = 'int'
+assert DynChild.__annotations__ == {'added': 'int'}
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FrozenDC:
+    x: int
+
+
+try:
+
+    @dataclass
+    class MutableChildDC(FrozenDC):
+        y: int
+
+    assert False, 'expected TypeError inheriting non-frozen from frozen'
+except TypeError as exc:
+    assert str(exc) == 'cannot inherit non-frozen dataclass from a frozen one'
+
+
+@dataclass
+class MutableDC:
+    x: int
+
+
+try:
+
+    @dataclass(frozen=True)
+    class FrozenChildDC(MutableDC):
+        y: int
+
+    assert False, 'expected TypeError inheriting frozen from non-frozen'
+except TypeError as exc:
+    assert str(exc) == 'cannot inherit frozen dataclass from a non-frozen one'
 
 print('success')

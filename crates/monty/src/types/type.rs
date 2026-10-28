@@ -4,7 +4,11 @@ use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs},
-    builtins::{Builtins, BuiltinsFunctions, iter::builtin_iter, object_setattr::builtin_object_setattr},
+    builtins::{
+        Builtins, BuiltinsFunctions, iter::builtin_iter, object_init::builtin_object_init,
+        object_init_subclass::builtin_object_init_subclass, object_new::builtin_object_new,
+        object_setattr::builtin_object_setattr, type_mro::builtin_type_mro,
+    },
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -18,10 +22,9 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
-        Str, TimeZone, Tuple,
+        BoundMethod, Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
+        Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
-        class::validate_init_subclass_args,
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
@@ -706,48 +709,17 @@ impl Type {
                 Ok(CallResult::Value(GenericAlias::subscript(ty, key, vm)))
             }
             _ if vm.interns.get_str(method_id) == "mro" => {
-                let type_name = self.name(vm.heap, vm.interns);
-                let pos = args.into_pos_only(&format!("{type_name}.mro"), vm.heap)?;
-                if !pos.as_slice().is_empty() {
-                    let count = pos.as_slice().len();
-                    pos.drop_with(vm.heap);
-                    return Err(ExcType::type_error(format!(
-                        "{type_name}.mro() takes no arguments ({count} given)"
-                    )));
-                }
-                let items = if self == Self::Object {
-                    vec![Value::Builtin(Builtins::Type(Self::Object))]
-                } else if self == Self::Bool {
-                    vec![
-                        Value::Builtin(Builtins::Type(Self::Bool)),
-                        Value::Builtin(Builtins::Type(Self::Int)),
-                        Value::Builtin(Builtins::Type(Self::Object)),
-                    ]
-                } else if self == Self::DateTime {
-                    vec![
-                        Value::Builtin(Builtins::Type(Self::DateTime)),
-                        Value::Builtin(Builtins::Type(Self::Date)),
-                        Value::Builtin(Builtins::Type(Self::Object)),
-                    ]
-                } else if matches!(self, Self::DefaultDict | Self::Counter) {
-                    vec![
-                        Value::Builtin(Builtins::Type(self)),
-                        Value::Builtin(Builtins::Type(Self::Dict)),
-                        Value::Builtin(Builtins::Type(Self::Object)),
-                    ]
-                } else {
-                    vec![
-                        Value::Builtin(Builtins::Type(self)),
-                        Value::Builtin(Builtins::Type(Self::Object)),
-                    ]
-                };
-                let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
-                Ok(CallResult::Value(Value::Ref(list_id)))
+                builtin_type_mro(vm, args.prepend(Value::Builtin(Builtins::Type(self)))).map(CallResult::Value)
             }
             _ if vm.interns.get_str(method_id) == "__init_subclass__" => {
-                let type_name = self.name(vm.heap, vm.interns);
-                validate_init_subclass_args(&type_name, args, vm.heap)?;
-                Ok(CallResult::Value(Value::None))
+                builtin_object_init_subclass(vm, args.prepend(Value::Builtin(Builtins::Type(self))))
+                    .map(CallResult::Value)
+            }
+            (Self::Object, _) if vm.interns.get_str(method_id) == "__new__" => {
+                builtin_object_new(vm, args).map(CallResult::Value)
+            }
+            (Self::Object, _) if vm.interns.get_str(method_id) == "__init__" => {
+                builtin_object_init(vm, args).map(CallResult::Value)
             }
             // The type's plain attributes (`list.__name__`); a missing name
             // raises the lookup's `type object 'list' has no attribute` error.
@@ -827,12 +799,23 @@ impl Type {
                 ItertoolsFunctions::ChainFromIterable,
             )))
         } else if self == Self::Object && attr.as_str(vm.interns) == "__setattr__" {
-            // `object.__setattr__` is the only member `object` carries: it
-            // exists so a class that hooks attribute writes has a way to
-            // perform one (see `limitations/classes.md`).
             Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectSetattr)))
         } else if self == Self::Object && attr.as_str(vm.interns) == "__new__" {
             Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew)))
+        } else if self == Self::Object && attr.as_str(vm.interns) == "__init__" {
+            Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInit)))
+        } else if attr.as_str(vm.interns) == "mro" {
+            let bound = BoundMethod {
+                instance: Value::Builtin(Builtins::Type(self)),
+                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+            };
+            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+        } else if attr.as_str(vm.interns) == "__init_subclass__" {
+            let bound = BoundMethod {
+                instance: Value::Builtin(Builtins::Type(self)),
+                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+            };
+            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
         } else {
             None
         }
