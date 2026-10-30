@@ -26,9 +26,10 @@ use crate::{
     types::{
         BuiltinType, BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
         bytes::PyBytes,
+        class::{rhs_is_proper_subclass_instance, rhs_overrides_subclass_dunder},
         decimal, host_class_type,
         inline_str::InlineStr,
-        instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
+        instance::{BoundMethod, class_defines, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -1038,8 +1039,23 @@ impl Value {
     /// Direct Python `==`, preserving any arbitrary value returned by `__eq__`.
     ///
     /// Tries the left operand, then reflected equality when it returns
-    /// `NotImplemented`; identity is only the final fallback after both decline.
+    /// `NotImplemented` (or reflected first when the right operand's class is a
+    /// strict subclass of the left's); identity is the final fallback.
     pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if rhs_is_proper_subclass_instance(self, other, vm) {
+            let rhs_result = other.py_rich_eq_impl(self, vm)?;
+            if !rhs_result.is_not_implemented() {
+                return Ok(rhs_result);
+            }
+
+            let lhs_result = self.py_rich_eq_impl(other, vm)?;
+            if !lhs_result.is_not_implemented() {
+                return Ok(lhs_result);
+            }
+
+            return Ok(Self::Bool(self.is(other)));
+        }
+
         let lhs_result = self.py_rich_eq_impl(other, vm)?;
         if !lhs_result.is_not_implemented() {
             return Ok(lhs_result);
@@ -1268,9 +1284,33 @@ impl Value {
                         let tuple_val = allocate_tuple(items.into(), vm.heap);
                         Ok(CallResult::Value(tuple_val))
                     }
-                    "__new__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
-                        BuiltinsFunctions::ObjectNew,
+                    "__new__" => {
+                        let bound = BoundMethod {
+                            instance: Self::Builtin(Builtins::ExcType(*exc_type)),
+                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
+                        };
+                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+                        Ok(CallResult::Value(Self::Ref(bound_id)))
+                    }
+                    "__init__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::ExceptionInit,
                     )))),
+                    "mro" => {
+                        let bound = BoundMethod {
+                            instance: Self::Builtin(Builtins::ExcType(*exc_type)),
+                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+                        };
+                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+                        Ok(CallResult::Value(Self::Ref(bound_id)))
+                    }
+                    "__init_subclass__" => {
+                        let bound = BoundMethod {
+                            instance: Self::Builtin(Builtins::ExcType(*exc_type)),
+                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                        };
+                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+                        Ok(CallResult::Value(Self::Ref(bound_id)))
+                    }
                     _ => Err(ExcType::attribute_error_type(
                         (*exc_type).into(),
                         attr.as_str(vm.interns),
@@ -1296,6 +1336,22 @@ impl Value {
                         ];
                         let tuple_val = allocate_tuple(items.into(), vm.heap);
                         Ok(CallResult::Value(tuple_val))
+                    }
+                    "mro" => {
+                        let bound = BoundMethod {
+                            instance: Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+                        };
+                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+                        Ok(CallResult::Value(Self::Ref(bound_id)))
+                    }
+                    "__init_subclass__" => {
+                        let bound = BoundMethod {
+                            instance: Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                        };
+                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+                        Ok(CallResult::Value(Self::Ref(bound_id)))
                     }
                     _ => Err(ExcType::attribute_error_type("type", attr.as_str(vm.interns))),
                 };
@@ -1520,6 +1576,7 @@ impl Value {
             vm,
             |vm| self.py_add_impl(other, vm),
             |vm| other.py_radd_impl(self, vm),
+            "__radd__",
         )
     }
 
@@ -1530,6 +1587,7 @@ impl Value {
             vm,
             |vm| self.py_sub_impl(other, vm),
             |vm| other.py_rsub_impl(self, vm),
+            "__rsub__",
             "-",
         )
     }
@@ -1541,6 +1599,7 @@ impl Value {
             vm,
             |vm| self.py_mul_impl(other, vm),
             |vm| other.py_rmul_impl(self, vm),
+            "__rmul__",
             "*",
         )
     }
@@ -1552,6 +1611,7 @@ impl Value {
             vm,
             |vm| self.py_matmul_impl(other, vm),
             |vm| other.py_rmatmul_impl(self, vm),
+            "__rmatmul__",
             "@",
         )
     }
@@ -1563,6 +1623,7 @@ impl Value {
             vm,
             |vm| self.py_truediv_impl(other, vm),
             |vm| other.py_rtruediv_impl(self, vm),
+            "__rtruediv__",
             "/",
         )
     }
@@ -1574,6 +1635,7 @@ impl Value {
             vm,
             |vm| self.py_floordiv_impl(other, vm),
             |vm| other.py_rfloordiv_impl(self, vm),
+            "__rfloordiv__",
             "//",
         )
     }
@@ -1585,6 +1647,7 @@ impl Value {
             vm,
             |vm| self.py_mod_impl(other, vm),
             |vm| other.py_rmod_impl(self, vm),
+            "__rmod__",
             "%",
         )
     }
@@ -1599,6 +1662,7 @@ impl Value {
             vm,
             |vm| self.py_divmod_impl(other, vm),
             |vm| other.py_rdivmod_impl(self, vm),
+            "__rdivmod__",
             "divmod()",
         )
     }
@@ -1611,6 +1675,7 @@ impl Value {
             vm,
             |vm| self.py_pow_impl(other, modulus, vm),
             |vm| other.py_rpow_impl(self, modulus, vm),
+            "__rpow__",
         )?;
         if let Some(result) = result {
             Ok(result)
@@ -1649,6 +1714,7 @@ impl Value {
             vm,
             |vm| self.py_and_impl(other, vm),
             |vm| other.py_rand_impl(self, vm),
+            "__rand__",
             "&",
         )
     }
@@ -1660,6 +1726,7 @@ impl Value {
             vm,
             |vm| self.py_or_impl(other, vm),
             |vm| other.py_ror_impl(self, vm),
+            "__ror__",
             "|",
         )
     }
@@ -1671,6 +1738,7 @@ impl Value {
             vm,
             |vm| self.py_xor_impl(other, vm),
             |vm| other.py_rxor_impl(self, vm),
+            "__rxor__",
             "^",
         )
     }
@@ -1682,6 +1750,7 @@ impl Value {
             vm,
             |vm| self.py_lshift_impl(other, vm),
             |vm| other.py_rlshift_impl(self, vm),
+            "__rlshift__",
             "<<",
         )
     }
@@ -1693,6 +1762,7 @@ impl Value {
             vm,
             |vm| self.py_rshift_impl(other, vm),
             |vm| other.py_rrshift_impl(self, vm),
+            "__rrshift__",
             ">>",
         )
     }
@@ -1704,9 +1774,10 @@ impl Value {
         vm: &mut VM<'_>,
         direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected_dunder: &'static str,
         operator: &'static str,
     ) -> RunResult<Self> {
-        if let Some(result) = self.binary_op_result(other, vm, direct, reflected)? {
+        if let Some(result) = self.binary_op_result(other, vm, direct, reflected, reflected_dunder)? {
             Ok(result)
         } else {
             let lhs_type = self.py_type(vm);
@@ -1726,16 +1797,22 @@ impl Value {
         }
     }
 
-    /// Tries numeric slots, suppressing reflected dispatch between instances of the same class.
-    /// Builtin representations still need both sides: an immediate `int` can
-    /// delegate to a heap `LongInt` even though both have Python type `int`.
+    /// Tries numeric slots, running reflected first when a strict subclass overrides the
+    /// reflected dunder, and suppressing reflected dispatch between instances of the same class.
     fn binary_op_result(
         &self,
         other: &Self,
         vm: &mut VM<'_>,
         direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected_dunder: &'static str,
     ) -> RunResult<Option<Self>> {
+        if rhs_overrides_subclass_dunder(self, other, reflected_dunder, vm) {
+            if let Some(result) = reflected(vm)? {
+                return Ok(Some(result));
+            }
+            return direct(vm);
+        }
         if let Some(result) = direct(vm)? {
             Ok(Some(result))
         } else if matches!(self.py_type(vm), Type::Instance(_)) && self.py_type(vm) == other.py_type(vm) {

@@ -2,11 +2,15 @@ use std::{borrow::Cow, fmt::Write};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type};
+use super::{Dict, LazyHeapSet, PyTrait, Type, class::ClassBase};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
-    builtins::Builtins,
+    builtins::{
+        Builtins, BuiltinsFunctions,
+        object_init::{builtin_exception_init, builtin_object_init},
+        object_new::{builtin_exception_new, builtin_object_new},
+    },
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -157,11 +161,25 @@ impl<'h> HeapReadMut<'h, Instance> {
             [name, value].drop_with(vm);
             return Err(exc);
         }
-        if let Some(text) = name.as_either_str(vm.heap)
-            && text.as_str(vm.interns) == "__class__"
-        {
-            [name, value].drop_with(vm);
-            return Err(ExcType::type_error("__class__ assignment not supported"));
+        if let Some(text) = name.as_either_str(vm.heap) {
+            let attr_name = text.as_str(vm.interns);
+            if attr_name == "__class__" {
+                [name, value].drop_with(vm);
+                return Err(ExcType::type_error("__class__ assignment not supported"));
+            }
+            if attr_name == "args" {
+                let is_exc = if let HeapData::Class(cls) = vm.heap.get(class_id) {
+                    cls.is_exception_class()
+                } else {
+                    false
+                };
+                if is_exc {
+                    let mut name_guard = DropGuard::new(name, vm);
+                    let coerced = coerce_exception_args(value, name_guard.as_parts_mut().1)?;
+                    let (name, vm) = name_guard.into_parts();
+                    return self.set_attr_unchecked(name, coerced, vm);
+                }
+            }
         }
         self.set_attr_unchecked(name, value, vm)
     }
@@ -178,6 +196,21 @@ impl<'h> HeapReadMut<'h, Instance> {
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
+}
+
+/// Coerces assigned exception `args` into a `Tuple`, matching Python's descriptor behavior.
+pub(crate) fn coerce_exception_args(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    if let Value::Ref(id) = &value
+        && matches!(vm.heap.get(*id), HeapData::Tuple(_))
+    {
+        return Ok(value);
+    }
+    let mut guard = DropGuard::new(value, vm);
+    let (val_ref, vm_mut) = guard.as_parts();
+    let items = super::iter::collect_iterable(val_ref, vm_mut)?;
+    let (old, vm) = guard.into_parts();
+    old.drop_with(vm);
+    Ok(super::allocate_tuple(items.into(), vm.heap))
 }
 
 /// Defines the one-argument numeric slots, sharing binding and `NotImplemented` handling.
@@ -473,7 +506,37 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             if attr_str == "__new__" {
                 return vm.call_function(member, args);
             }
+            if attr_str == "__init_subclass__" {
+                return call_member_bound(member, class_id, args, vm);
+            }
             return call_member_bound(member, self.id(), args, vm);
+        }
+
+        if attr_str == "__new__" {
+            let base_exc = match vm.heap.get(class_id) {
+                HeapData::Class(cls) => cls.base_exception(),
+                _ => None,
+            };
+            if let Some(exc_type) = base_exc {
+                return builtin_exception_new(vm, args.prepend(Value::Builtin(Builtins::ExcType(exc_type))))
+                    .map(CallResult::Value);
+            }
+            return builtin_object_new(vm, args).map(CallResult::Value);
+        }
+
+        if attr_str == "__init_subclass__" {
+            let func = Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass));
+            return call_member_bound(&func, class_id, args, vm);
+        }
+
+        if attr_str == "__init__" {
+            let is_exc = matches!(vm.heap.get(class_id), HeapData::Class(cls) if cls.is_exception_class());
+            let self_id = self.id();
+            vm.heap.inc_ref(self_id);
+            if is_exc {
+                return builtin_exception_init(vm, args.prepend(Value::Ref(self_id))).map(CallResult::Value);
+            }
+            return builtin_object_init(vm, args.prepend(Value::Ref(self_id))).map(CallResult::Value);
         }
 
         // 3. `obj.__class__(...)` constructs a new instance — the callable form of
@@ -710,17 +773,57 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
         return Some(value);
     }
     match class_member(class_id, attr, vm) {
-        // A class variable is returned as-is; a function binds `self`.
+        // A class variable is returned as-is; a function binds `self` (or `class` for `__init_subclass__`).
         Some(member) if attr != "__new__" && is_method_value(&member, vm) => {
-            vm.heap.inc_ref(self_id);
+            let receiver = if attr == "__init_subclass__" {
+                vm.heap.inc_ref(class_id);
+                Value::Ref(class_id)
+            } else {
+                vm.heap.inc_ref(self_id);
+                Value::Ref(self_id)
+            };
             let bound = BoundMethod {
-                instance: Value::Ref(self_id),
+                instance: receiver,
                 func: member,
             };
             Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
         }
         Some(member) => Some(member),
-        None => None,
+        None => {
+            if attr == "__new__" {
+                if let HeapData::Class(cls) = vm.heap.get(class_id)
+                    && let Some(exc_type) = cls.base_exception()
+                {
+                    let bound = BoundMethod {
+                        instance: Value::Builtin(Builtins::ExcType(exc_type)),
+                        func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
+                    };
+                    return Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))));
+                }
+                Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew)))
+            } else if attr == "__init_subclass__" {
+                vm.heap.inc_ref(class_id);
+                let bound = BoundMethod {
+                    instance: Value::Ref(class_id),
+                    func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                };
+                Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+            } else if attr == "__init__" {
+                let func = if matches!(vm.heap.get(class_id), HeapData::Class(cls) if cls.is_exception_class()) {
+                    BuiltinsFunctions::ExceptionInit
+                } else {
+                    BuiltinsFunctions::ObjectInit
+                };
+                vm.heap.inc_ref(self_id);
+                let bound = BoundMethod {
+                    instance: Value::Ref(self_id),
+                    func: Value::Builtin(Builtins::Function(func)),
+                };
+                Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -741,8 +844,12 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
     } else {
         let class_id = instance_class(self_id, vm);
         if let HeapData::Class(cls) = vm.heap.get(class_id)
-            && let Some(base_exc) = cls.base_exception()
+            && cls.base_exception().is_some()
         {
+            let is_key_error = cls
+                .mro()
+                .iter()
+                .any(|b| matches!(b, ClassBase::BuiltinExc(ExcType::KeyError)));
             let mut guard = vm.recursion_guard()?;
             let vm = &mut *guard;
             let args = instance_attr(self_id, "args", vm).unwrap_or(Value::None);
@@ -755,7 +862,7 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
                 [item] => {
                     let item = item.clone_with_heap(vm.heap);
                     defer_drop!(item, vm);
-                    if base_exc == ExcType::KeyError {
+                    if is_key_error {
                         item.py_repr(vm)
                     } else {
                         item.py_str(vm)

@@ -90,7 +90,7 @@ impl VM<'_> {
                     let mut frame = self.make_stack_frame();
                     // Use the hide_caret flag from the error (set by error creators)
                     frame.hide_caret = exc.hide_caret;
-                    exc.frame = Some(frame);
+                    exc.frame = Some(Box::new(frame));
                 }
                 RunError::Exc(exc)
             }
@@ -98,7 +98,7 @@ impl VM<'_> {
                 if exc.frame.is_none() && !self.current_frame_is_frozen() {
                     let mut frame = self.make_stack_frame();
                     frame.hide_caret = exc.hide_caret;
-                    exc.frame = Some(frame);
+                    exc.frame = Some(Box::new(frame));
                 }
                 RunError::UncatchableExc(exc)
             }
@@ -112,35 +112,44 @@ impl VM<'_> {
     /// `raise`/`Reraise` paths reuse it as the raised object itself.
     /// The `is_raise` flag indicates if this is from a `raise` statement (hide caret).
     pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
-        let simple_exc = match exc_value {
+        let (simple_exc, origin_heap_id) = match exc_value {
             // Exception instance on heap
             Value::Ref(heap_id) => {
                 if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    exc.clone()
+                    (exc.clone(), Some(*heap_id))
                 } else if let HeapData::Instance(inst) = self.heap.get(*heap_id)
                     && let HeapData::Class(cls) = self.heap.get(inst.class())
                     && let Some(base_exc) = cls.base_exception()
                 {
                     let custom_name = cls.name().as_str(self.interns).to_owned();
-                    SimpleException::new_none(base_exc).with_custom_type_name(Some(custom_name))
+                    (
+                        SimpleException::new_none(base_exc).with_custom_type_name(Some(custom_name)),
+                        Some(*heap_id),
+                    )
                 } else {
                     // Not an exception type
-                    SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
+                    (
+                        SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
+                        None,
+                    )
                 }
             }
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
-            Value::Builtin(Builtins::ExcType(exc_type)) => SimpleException::new_none(*exc_type),
+            Value::Builtin(Builtins::ExcType(exc_type)) => (SimpleException::new_none(*exc_type), None),
             // Invalid exception value
-            _ => SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
+            _ => (
+                SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
+                None,
+            ),
         };
 
         let frame = (!self.current_frame_is_frozen()).then(|| {
-            if is_raise {
+            Box::new(if is_raise {
                 RawStackFrame::from_raise(self.current_position(), self.current_frame_name())
             } else {
                 self.make_stack_frame()
-            }
+            })
         });
 
         RunError::Exc(ExceptionRaise {
@@ -148,6 +157,7 @@ impl VM<'_> {
             frame,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id,
         })
     }
 
@@ -214,10 +224,14 @@ impl VM<'_> {
 
     /// Converts best-effort detail into an `AssertionError` message.
     /// Catchable formatting errors fall back to no detail; terminal errors propagate.
-    fn assert_failure(&self, detail: RunResult<Option<String>>) -> RunError {
+    fn assert_failure(&mut self, detail: RunResult<Option<String>>) -> RunError {
         match detail {
             Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
-            Ok(None) | Err(RunError::Exc(_)) => self.assertion_error(None),
+            Ok(None) => self.assertion_error(None),
+            Err(RunError::Exc(_)) => {
+                self.clear_unwinding_exception();
+                self.assertion_error(None)
+            }
             Err(e) => e,
         }
     }
@@ -234,7 +248,10 @@ impl VM<'_> {
         // the message itself fails to stringify.
         let detail = match this.assert_detail(cmp_op) {
             Ok(detail) => detail,
-            Err(RunError::Exc(_)) => None,
+            Err(RunError::Exc(_)) => {
+                this.clear_unwinding_exception();
+                None
+            }
             Err(e) => return e,
         };
         let msg = match assert_msg_str(msg_value, this) {
@@ -242,7 +259,10 @@ impl VM<'_> {
             // show only the detail — avoids a stray leading `\n` before `assert`.
             Ok(msg) if msg.is_empty() => None,
             Ok(msg) => Some(msg),
-            Err(RunError::Exc(_)) => None,
+            Err(RunError::Exc(_)) => {
+                this.clear_unwinding_exception();
+                None
+            }
             Err(e) => return e,
         };
         let full = match (msg, detail) {
@@ -281,13 +301,18 @@ impl VM<'_> {
 
     /// Creates an `AssertionError` raised at the current source position.
     fn assertion_error(&self, msg: Option<String>) -> RunError {
-        let frame = (!self.current_frame_is_frozen())
-            .then(|| RawStackFrame::from_raise(self.current_position(), self.current_frame_name()));
+        let frame = (!self.current_frame_is_frozen()).then(|| {
+            Box::new(RawStackFrame::from_raise(
+                self.current_position(),
+                self.current_frame_name(),
+            ))
+        });
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
             frame,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         })
     }
 
@@ -480,7 +505,6 @@ impl VM<'_> {
                 }
             }
             if should_return {
-                format_unhandled_custom_exception(&mut error, &mut exc_guard);
                 let (exc_value, this) = exc_guard.into_parts();
                 if let Some(old) = this.unwinding_exception.replace(exc_value) {
                     old.drop_with(this);
@@ -694,21 +718,36 @@ impl Write for TruncatingWriter {
 }
 
 fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropGuard<'_, VM<'_>, Value>) {
-    if let RunError::Exc(raise) = error
+    let replace_error = if let RunError::Exc(raise) = error
         && raise.exc.arg().is_none()
         && raise.exc.custom_type_name().is_some()
     {
         let (exc_val, this) = exc_guard.as_parts();
-        if let Ok(text) = exc_val.py_str(this) {
-            defer_drop!(text, this);
-            if let Some(s) = text.as_str(this)
-                && !s.is_empty()
-            {
-                raise.exc.set_arg(Some(s.to_owned()));
+        match exc_val.py_str(this) {
+            Ok(text) => {
+                defer_drop!(text, this);
+                if let Some(s) = text.as_str(this)
+                    && !s.is_empty()
+                {
+                    raise.exc.set_arg(Some(s.to_owned()));
+                }
+                None
             }
-        } else {
-            this.clear_unwinding_exception();
+            Err(RunError::Exc(_)) => {
+                this.clear_unwinding_exception();
+                raise.exc.set_arg(Some("<exception str() failed>".to_owned()));
+                None
+            }
+            Err(fatal @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                this.clear_unwinding_exception();
+                Some(fatal)
+            }
         }
+    } else {
+        None
+    };
+    if let Some(fatal) = replace_error {
+        *error = fatal;
     }
 }
 
@@ -716,6 +755,9 @@ fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>)
     let RunError::Exc(raise) = error else {
         return false;
     };
+    if let (Some(origin_id), Value::Ref(id)) = (raise.origin_heap_id, exc_val) {
+        return origin_id == *id;
+    }
     match exc_val {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Exception(e) => {

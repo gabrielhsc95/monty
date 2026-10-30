@@ -37,6 +37,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Class, ClassAnnotations, Dict, Module, PyTrait, TupleVec, allocate_tuple,
+        class::ClassBase,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
     },
@@ -256,6 +257,26 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     let HeapReadOutput::Class(class) = vm.heap.read(*class_id) else {
         return Err(non_class_error(cls, vm));
     };
+    for base in class.get(vm.heap).mro() {
+        if let ClassBase::Class(base_id) = base
+            && let HeapData::Class(base_cls) = vm.heap.get(*base_id)
+            && let Some(Value::Ref(params_id)) =
+                base_cls
+                    .namespace()
+                    .get_by_str("__dataclass_params__", vm.heap, vm.interns)
+            && let HeapData::DataclassParams(params) = vm.heap.get(*params_id)
+        {
+            let base_options = params.options();
+            if base_options.frozen != options.frozen {
+                let msg = if options.frozen {
+                    "cannot inherit frozen dataclass from a non-frozen one"
+                } else {
+                    "cannot inherit non-frozen dataclass from a frozen one"
+                };
+                return Err(ExcType::type_error(msg));
+            }
+        }
+    }
     let fields = build_dataclass_fields(&class, vm)?;
     let Value::Ref(fields_id) = fields else {
         unreachable!("the fields mapping is a dict")

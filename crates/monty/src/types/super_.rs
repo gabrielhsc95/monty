@@ -4,22 +4,26 @@ use std::{borrow::Cow, fmt::Write};
 
 use super::{
     BuiltinType, LazyHeapSet, PyTrait, Type,
-    class::{ClassBase, validate_init_subclass_args},
+    class::ClassBase,
     instance::{BoundMethod, class_name, is_method_value},
-    tuple::allocate_tuple,
 };
 use crate::{
     args::ArgValues,
     builtins::{
-        Builtins, BuiltinsFunctions, isinstance::isinstance_check, issubclass::issubclass_check,
-        object_new::builtin_object_new,
+        Builtins, BuiltinsFunctions,
+        isinstance::isinstance_check,
+        issubclass::issubclass_check,
+        object_init::{builtin_exception_init, builtin_object_init},
+        object_init_subclass::builtin_object_init_subclass,
+        object_new::{builtin_exception_new, builtin_object_new},
+        type_of_ref,
     },
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::{FunctionId, StaticStrings},
+    namespace::NamespaceId,
     value::{EitherStr, Value},
 };
 
@@ -92,99 +96,89 @@ pub fn builtin_super(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 fn zero_arg_super(vm: &mut VM<'_>) -> RunResult<Value> {
-    let (locals_count, base, func_id) = {
+    let (base, func_id) = {
         let frame = vm.current_frame();
-        (frame.locals_count(), frame.stack_base(), frame.function_id())
+        (frame.stack_base(), frame.function_id())
     };
-    if locals_count == 0 {
+    let Some(func_id) = func_id else {
+        return Err(ExcType::runtime_error("super(): no arguments"));
+    };
+    let (has_pos_param, self_cell_slot, class_cell_slot) = {
+        let func = vm.interns.get_function(func_id);
+        let has_pos_param = func.signature.has_positional_param();
+        let self_cell_slot = func
+            .cell_param_indices
+            .iter()
+            .position(|&p| p == Some(0))
+            .map(|idx| func.cell_var_slots[idx].index());
+        let class_cell_slot = func
+            .free_var_slots
+            .iter()
+            .copied()
+            .find(|slot| {
+                func.code
+                    .local_name(slot.as_u16())
+                    .is_some_and(|id| vm.interns.get_str(id) == "__class__")
+            })
+            .map(NamespaceId::index);
+        (has_pos_param, self_cell_slot, class_cell_slot)
+    };
+    if !has_pos_param {
         return Err(ExcType::runtime_error("super(): no arguments"));
     }
-    let self_val = vm.stack[base].clone_with_heap(vm.heap);
+
+    let self_val = if let Some(slot) = self_cell_slot {
+        let Value::Ref(cell_id) = vm.stack[base + slot] else {
+            unreachable!("captured parameter slot must hold a Cell reference");
+        };
+        let HeapData::Cell(cell) = vm.heap.get(cell_id) else {
+            unreachable!("captured parameter slot must point to a Cell");
+        };
+        cell.0.clone_with_heap(vm.heap)
+    } else {
+        vm.stack[base].clone_with_heap(vm.heap)
+    };
     if matches!(self_val, Value::Undefined) {
-        return Err(ExcType::runtime_error("super(): no arguments"));
+        return Err(ExcType::runtime_error("super(): arg[0] deleted"));
     }
     defer_drop!(self_val, vm);
 
-    let mut class_val = None;
-    for slot in 0..locals_count {
-        let name_match = vm
-            .current_frame()
-            .code()
-            .local_name(slot)
-            .is_some_and(|name_id| vm.interns.get_str(name_id) == "__class__");
-        if name_match
-            && let Value::Ref(cell_id) = vm.stack[base + usize::from(slot)]
-            && let HeapData::Cell(cell) = vm.heap.get(cell_id)
-        {
-            let val = cell.0.clone_with_heap(vm.heap);
-            if !matches!(val, Value::Undefined) {
-                class_val = Some(val);
-                break;
-            }
-        }
-    }
-
-    if class_val.is_none()
-        && let Some(fid) = func_id
-    {
-        class_val = find_defining_class(fid, self_val, vm);
-    }
-
-    let Some(class_val) = class_val else {
+    let Some(class_slot) = class_cell_slot else {
         return Err(ExcType::runtime_error("super(): __class__ cell not found"));
     };
+    let class_val = {
+        let Value::Ref(cell_id) = vm.stack[base + class_slot] else {
+            unreachable!("__class__ free-var slot must hold a Cell reference");
+        };
+        let HeapData::Cell(cell) = vm.heap.get(cell_id) else {
+            unreachable!("__class__ free-var slot must point to a Cell");
+        };
+        cell.0.clone_with_heap(vm.heap)
+    };
+    if matches!(class_val, Value::Undefined) {
+        return Err(ExcType::runtime_error("super(): empty __class__ cell"));
+    }
     defer_drop!(class_val, vm);
 
-    validate_super_type(class_val, vm)?;
+    if !is_type_value(class_val, vm) {
+        let got = class_val.py_type_name(vm);
+        return Err(ExcType::runtime_error(format!(
+            "super(): __class__ is not a type ({got})"
+        )));
+    }
+
+    if matches!(self_val, Value::None) {
+        let type_arg = class_val.clone_with_heap(vm.heap);
+        let s = Super::new(type_arg, None);
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::Super(s))));
+    }
+
     validate_super_obj(class_val, self_val, vm)?;
 
     let type_arg = class_val.clone_with_heap(vm.heap);
     let obj_arg = self_val.clone_with_heap(vm.heap);
     let s = Super::new(type_arg, Some(obj_arg));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Super(s))))
-}
-
-fn find_defining_class(func_id: FunctionId, self_val: &Value, vm: &VM<'_>) -> Option<Value> {
-    let start_class_id = match self_val {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Instance(inst) => Some(inst.class()),
-            HeapData::Class(_) => Some(*id),
-            _ => None,
-        },
-        _ => None,
-    };
-
-    if let Some(start_class_id) = start_class_id
-        && let HeapData::Class(start_class) = vm.heap.get(start_class_id)
-    {
-        if start_class.defined_methods().contains(&func_id) {
-            vm.heap.inc_ref(start_class_id);
-            return Some(Value::Ref(start_class_id));
-        }
-
-        for base in start_class.mro() {
-            if let ClassBase::Class(cls_id) = base
-                && let HeapData::Class(cls) = vm.heap.get(*cls_id)
-                && cls.defined_methods().contains(&func_id)
-            {
-                vm.heap.inc_ref(*cls_id);
-                return Some(Value::Ref(*cls_id));
-            }
-        }
-    }
-
-    // Fallback: search classes in globals if self was reassigned
-    for val in &vm.globals {
-        if let Value::Ref(cls_id) = val
-            && let HeapData::Class(cls) = vm.heap.get(*cls_id)
-            && cls.defined_methods().contains(&func_id)
-        {
-            vm.heap.inc_ref(*cls_id);
-            return Some(Value::Ref(*cls_id));
-        }
-    }
-
-    None
 }
 
 fn is_type_value(val: &Value, vm: &VM<'_>) -> bool {
@@ -286,6 +280,14 @@ fn get_search_bases<'a>(type_arg: &Value, obj_arg: &Value, vm: &'a VM<'_>) -> Op
     }
 }
 
+fn resolve_super_self_class(type_arg: &Value, obj_arg: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    if is_type_value(obj_arg, vm) && issubclass_check(obj_arg, type_arg, vm)? {
+        Ok(obj_arg.clone_with_heap(vm.heap))
+    } else {
+        Ok(type_of_ref(vm, obj_arg))
+    }
+}
+
 fn super_mro_lookup(type_arg: &Value, obj_arg: &Value, attr_str: &str, vm: &mut VM<'_>) -> Option<Value> {
     let search_bases = get_search_bases(type_arg, obj_arg, vm)?;
 
@@ -305,8 +307,18 @@ fn super_mro_lookup(type_arg: &Value, obj_arg: &Value, attr_str: &str, vm: &mut 
                         && (!is_obj_class || attr_str == "__init_subclass__")
                         && is_method_value(&member_val, vm)
                     {
+                        let receiver = if attr_str == "__init_subclass__"
+                            && let Value::Ref(id) = obj_arg
+                            && let HeapData::Instance(inst) = vm.heap.get(*id)
+                        {
+                            let cid = inst.class();
+                            vm.heap.inc_ref(cid);
+                            Value::Ref(cid)
+                        } else {
+                            obj_arg.clone_with_heap(vm.heap)
+                        };
                         let bound = BoundMethod {
-                            instance: obj_arg.clone_with_heap(vm.heap),
+                            instance: receiver,
                             func: member_val,
                         };
                         return Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))));
@@ -344,23 +356,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let s = self.get(vm.heap);
-        let type_name = type_or_class_name(&s.type_arg, vm);
-        match &s.obj_arg {
-            Some(obj) => {
-                let obj_type_name = match obj {
-                    Value::Ref(id) => match vm.heap.get(*id) {
-                        HeapData::Class(_) => class_name(*id, vm.heap, vm.interns),
-                        HeapData::HostClassType(ty) => Cow::Borrowed(ty.name(vm.interns)),
-                        _ => obj.py_type_name(vm),
-                    },
-                    Value::Builtin(Builtins::Type(t)) => Type::from(*t).name(vm.heap, vm.interns),
-                    _ => obj.py_type_name(vm),
-                };
-                write!(f, "<super: <class '{type_name}'>, <{obj_type_name} object>>")?;
-            }
-            None => {
-                write!(f, "<super: <class '{type_name}'>, NULL>")?;
-            }
+        let type_arg = s.type_arg.clone_with_heap(vm.heap);
+        let obj_arg = s.obj_arg.as_ref().map(|o| o.clone_with_heap(vm.heap));
+        defer_drop!(type_arg, vm);
+        if let Some(obj) = obj_arg {
+            defer_drop!(obj, vm);
+            let self_cls = resolve_super_self_class(type_arg, obj, vm)?;
+            defer_drop!(self_cls, vm);
+            let type_name = type_or_class_name(type_arg, vm);
+            let obj_type_name = type_or_class_name(self_cls, vm);
+            write!(f, "<super: <class '{type_name}'>, <{obj_type_name} object>>")?;
+        } else {
+            let type_name = type_or_class_name(type_arg, vm);
+            write!(f, "<super: <class '{type_name}'>, NULL>")?;
         }
         Ok(())
     }
@@ -381,40 +389,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
             return Ok(Some(CallResult::Value(val)));
         }
         if attr_str == "__self_class__" {
-            let val = match &s.obj_arg {
-                Some(Value::Ref(id)) => match vm.heap.get(*id) {
-                    HeapData::Instance(inst) => {
-                        let cid = inst.class();
-                        vm.heap.inc_ref(cid);
-                        Value::Ref(cid)
-                    }
-                    HeapData::Class(_) => {
-                        vm.heap.inc_ref(*id);
-                        Value::Ref(*id)
-                    }
-                    _ => {
-                        let t = Value::Ref(*id).py_type(vm);
-                        if t == Type::Type {
-                            Value::Builtin(Builtins::Function(BuiltinsFunctions::Type))
-                        } else {
-                            Value::Builtin(Builtins::Type(
-                                t.try_into().expect("instances return their class object"),
-                            ))
-                        }
-                    }
-                },
-                Some(obj) => {
-                    let t = obj.py_type(vm);
-                    if t == Type::Type {
-                        Value::Builtin(Builtins::Function(BuiltinsFunctions::Type))
-                    } else {
-                        Value::Builtin(Builtins::Type(
-                            t.try_into().expect("instances return their class object"),
-                        ))
-                    }
-                }
-                None => Value::None,
+            let Some(obj) = s.obj_arg.as_ref().map(|o| o.clone_with_heap(vm.heap)) else {
+                return Ok(Some(CallResult::Value(Value::None)));
             };
+            let type_arg = s.type_arg.clone_with_heap(vm.heap);
+            defer_drop!(obj, vm);
+            defer_drop!(type_arg, vm);
+            let val = resolve_super_self_class(type_arg, obj, vm)?;
             return Ok(Some(CallResult::Value(val)));
         }
 
@@ -431,9 +412,69 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
         }
 
         if attr_str == "__new__" {
-            return Ok(Some(CallResult::Value(Value::Builtin(Builtins::Function(
-                BuiltinsFunctions::ObjectNew,
-            )))));
+            let func = if let Some(search_bases) = get_search_bases(type_arg, obj, vm) {
+                let mut found = None;
+                for base in search_bases {
+                    match base {
+                        ClassBase::Class(_) => {}
+                        ClassBase::BuiltinExc(e) => {
+                            let bound = BoundMethod {
+                                instance: Value::Builtin(Builtins::ExcType(*e)),
+                                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
+                            };
+                            found = Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))));
+                            break;
+                        }
+                        ClassBase::Object => {
+                            found = Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew)));
+                            break;
+                        }
+                    }
+                }
+                found.unwrap_or(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew)))
+            } else {
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew))
+            };
+            return Ok(Some(CallResult::Value(func)));
+        }
+
+        if attr_str == "__init__" {
+            let mut init_fn = BuiltinsFunctions::ObjectInit;
+            if let Some(search_bases) = get_search_bases(type_arg, obj, vm) {
+                for base in search_bases {
+                    match base {
+                        ClassBase::Class(_) => {}
+                        ClassBase::BuiltinExc(_) => {
+                            init_fn = BuiltinsFunctions::ExceptionInit;
+                            break;
+                        }
+                        ClassBase::Object => break,
+                    }
+                }
+            }
+            let bound = BoundMethod {
+                instance: obj.clone_with_heap(vm.heap),
+                func: Value::Builtin(Builtins::Function(init_fn)),
+            };
+            let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+            return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+        }
+
+        if attr_str == "__init_subclass__" {
+            let target = match &obj {
+                Value::Ref(id) if let HeapData::Instance(inst) = vm.heap.get(*id) => {
+                    let cid = inst.class();
+                    vm.heap.inc_ref(cid);
+                    Value::Ref(cid)
+                }
+                _ => obj.clone_with_heap(vm.heap),
+            };
+            let bound = BoundMethod {
+                instance: target,
+                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+            };
+            let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
+            return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
         }
 
         Err(ExcType::attribute_error("super", attr_str))
@@ -485,46 +526,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
                             }
                         }
                         ClassBase::BuiltinExc(_) => {
-                            let (pos, kwargs) = args.into_parts();
-                            if !kwargs.is_empty() {
-                                pos.drop_with(vm.heap);
-                                kwargs.drop_with(vm.heap);
-                                return Err(ExcType::type_error(
-                                    "BaseException.__init__() takes no keyword arguments",
-                                ));
-                            }
-                            kwargs.drop_with(vm.heap);
-                            let pos_vec: Vec<Value> = pos.collect();
-                            let args_tuple = allocate_tuple(pos_vec.into(), vm.heap);
-                            obj.py_set_attr(
-                                &EitherStr::Interned(vm.interns.intern_static(StaticStrings::Args)),
-                                args_tuple,
-                                vm,
-                            )?;
-                            return Ok(CallResult::Value(Value::None));
+                            return builtin_exception_init(vm, args.prepend(obj.clone_with_heap(vm.heap)))
+                                .map(CallResult::Value);
                         }
                         ClassBase::Object => {
-                            let pos = args.into_pos_only("object.__init__", vm.heap)?;
-                            if !pos.as_slice().is_empty() {
-                                pos.drop_with(vm.heap);
-                                return Err(ExcType::type_error(
-                                    "object.__init__() takes exactly one argument (the instance to initialize)",
-                                ));
-                            }
-                            return Ok(CallResult::Value(Value::None));
+                            return builtin_object_init(vm, args.prepend(obj.clone_with_heap(vm.heap)))
+                                .map(CallResult::Value);
                         }
                     }
                 }
             }
 
-            let pos = args.into_pos_only("object.__init__", vm.heap)?;
-            if !pos.as_slice().is_empty() {
-                pos.drop_with(vm.heap);
-                return Err(ExcType::type_error(
-                    "object.__init__() takes exactly one argument (the instance to initialize)",
-                ));
-            }
-            return Ok(CallResult::Value(Value::None));
+            return builtin_object_init(vm, args.prepend(obj.clone_with_heap(vm.heap))).map(CallResult::Value);
         }
 
         if let Some(member) = super_mro_lookup(type_arg, obj, attr_str, vm) {
@@ -533,13 +546,33 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
         }
 
         if attr_str == "__new__" {
+            if let Some(search_bases) = get_search_bases(type_arg, obj, vm) {
+                for base in search_bases {
+                    match base {
+                        ClassBase::Class(_) => {}
+                        ClassBase::BuiltinExc(e) => {
+                            return builtin_exception_new(vm, args.prepend(Value::Builtin(Builtins::ExcType(*e))))
+                                .map(CallResult::Value);
+                        }
+                        ClassBase::Object => {
+                            return builtin_object_new(vm, args).map(CallResult::Value);
+                        }
+                    }
+                }
+            }
             return builtin_object_new(vm, args).map(CallResult::Value);
         }
 
         if attr_str == "__init_subclass__" {
-            let target_name = type_or_class_name(obj, vm).into_owned();
-            validate_init_subclass_args(&target_name, args, vm.heap)?;
-            return Ok(CallResult::Value(Value::None));
+            let target = match &obj {
+                Value::Ref(id) if let HeapData::Instance(inst) = vm.heap.get(*id) => {
+                    let cid = inst.class();
+                    vm.heap.inc_ref(cid);
+                    Value::Ref(cid)
+                }
+                _ => obj.clone_with_heap(vm.heap),
+            };
+            return builtin_object_init_subclass(vm, args.prepend(target)).map(CallResult::Value);
         }
 
         args.drop_with(vm.heap);

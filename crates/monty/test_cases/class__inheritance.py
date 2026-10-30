@@ -1064,6 +1064,28 @@ assert issubclass(Exception, object)
 assert not issubclass(Child, Exception)
 assert not isinstance(Child(), Exception)
 
+
+class MultiExc(KeyError, AttributeError):
+    pass
+
+
+assert issubclass(MultiExc, KeyError)
+assert issubclass(MultiExc, AttributeError)
+assert issubclass(MultiExc, LookupError)
+assert issubclass(MultiExc, Exception)
+
+me = MultiExc('missing')
+assert isinstance(me, KeyError)
+assert isinstance(me, AttributeError)
+assert me.args == ('missing',)
+
+me.args = [1, 2]
+assert me.args == (1, 2)
+assert type(me.args) is tuple
+
+object.__setattr__(me, 'args', (3, 4))
+assert me.args == (3, 4)
+
 Point = namedtuple('Point', ['x'])
 OtherPoint = namedtuple('Point', ['x'])
 assert issubclass(Point, Point)
@@ -1097,5 +1119,341 @@ check_error(lambda: issubclass(), 'issubclass expected 2 arguments, got 0')
 check_error(lambda: issubclass(int), 'issubclass expected 2 arguments, got 1')
 check_error(lambda: issubclass(int, str, object), 'issubclass expected 2 arguments, got 3')
 check_error(lambda: issubclass(int, classinfo=int), 'issubclass() takes no keyword arguments')
+
+# === Stage 1.3: inherited __init_subclass__, __mro__ write guard, dynamic __annotations__, frozen dataclass ===
+hook_log = []
+
+
+class HookRoot:
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__()
+        hook_log.append((cls.__name__, kwargs))
+
+
+class HookMid(HookRoot):
+    pass
+
+
+hook_log.clear()
+HookMid.__init_subclass__(flag=1)
+fn_hook = HookMid.__init_subclass__
+fn_hook(flag=2)
+hm_inst = HookMid()
+hm_inst.__init_subclass__(flag=3)
+fn_inst_hook = hm_inst.__init_subclass__
+fn_inst_hook(flag=4)
+assert hook_log == [
+    ('HookMid', {'flag': 1}),
+    ('HookMid', {'flag': 2}),
+    ('HookMid', {'flag': 3}),
+    ('HookMid', {'flag': 4}),
+]
+
+try:
+    HookMid.__mro__ = ()
+    assert False, 'expected AttributeError writing __mro__'
+except AttributeError as exc:
+    assert str(exc) == "attribute '__mro__' of 'type' objects is not writable"
+
+DynChild = type('DynChild', (HookRoot,), {})
+ann1 = DynChild.__annotations__
+ann2 = DynChild.__annotations__
+assert ann1 == {}
+assert ann1 is ann2
+ann1['added'] = 'int'
+assert DynChild.__annotations__ == {'added': 'int'}
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FrozenDC:
+    x: int
+
+
+try:
+
+    @dataclass
+    class MutableChildDC(FrozenDC):
+        y: int
+
+    assert False, 'expected TypeError inheriting non-frozen from frozen'
+except TypeError as exc:
+    assert str(exc) == 'cannot inherit non-frozen dataclass from a frozen one'
+
+
+@dataclass
+class MutableDC:
+    x: int
+
+
+try:
+
+    @dataclass(frozen=True)
+    class FrozenChildDC(MutableDC):
+        y: int
+
+    assert False, 'expected TypeError inheriting frozen from non-frozen'
+except TypeError as exc:
+    assert str(exc) == 'cannot inherit frozen dataclass from a non-frozen one'
+
+
+# --- Subclass reflected binary operator and rich equality precedence ---
+class OpBase:
+    def __add__(self, o):
+        return 'base.add'
+
+    def __sub__(self, o):
+        return 'base.sub'
+
+    def __mul__(self, o):
+        return 'base.mul'
+
+    def __matmul__(self, o):
+        return 'base.matmul'
+
+    def __truediv__(self, o):
+        return 'base.truediv'
+
+    def __floordiv__(self, o):
+        return 'base.floordiv'
+
+    def __mod__(self, o):
+        return 'base.mod'
+
+    def __divmod__(self, o):
+        return 'base.divmod'
+
+    def __pow__(self, o, m=None):
+        return ('base.pow', m)
+
+    def __and__(self, o):
+        return 'base.and'
+
+    def __or__(self, o):
+        return 'base.or'
+
+    def __xor__(self, o):
+        return 'base.xor'
+
+    def __lshift__(self, o):
+        return 'base.lshift'
+
+    def __rshift__(self, o):
+        return 'base.rshift'
+
+
+class OpSub(OpBase):
+    def __radd__(self, o):
+        return 'sub.radd'
+
+    def __rsub__(self, o):
+        return 'sub.rsub'
+
+    def __rmul__(self, o):
+        return 'sub.rmul'
+
+    def __rmatmul__(self, o):
+        return 'sub.rmatmul'
+
+    def __rtruediv__(self, o):
+        return 'sub.rtruediv'
+
+    def __rfloordiv__(self, o):
+        return 'sub.rfloordiv'
+
+    def __rmod__(self, o):
+        return 'sub.rmod'
+
+    def __rdivmod__(self, o):
+        return 'sub.rdivmod'
+
+    def __rpow__(self, o, m=None):
+        return ('sub.rpow', m)
+
+    def __rand__(self, o):
+        return 'sub.rand'
+
+    def __ror__(self, o):
+        return 'sub.ror'
+
+    def __rxor__(self, o):
+        return 'sub.rxor'
+
+    def __rlshift__(self, o):
+        return 'sub.rlshift'
+
+    def __rrshift__(self, o):
+        return 'sub.rrshift'
+
+
+class OpInherited(OpBase):
+    pass
+
+
+ob = OpBase()
+os_inst = OpSub()
+oi = OpInherited()
+assert ob + os_inst == 'sub.radd'
+assert ob - os_inst == 'sub.rsub'
+assert ob * os_inst == 'sub.rmul'
+assert ob @ os_inst == 'sub.rmatmul'
+assert ob / os_inst == 'sub.rtruediv'
+assert ob // os_inst == 'sub.rfloordiv'
+assert ob % os_inst == 'sub.rmod'
+assert divmod(ob, os_inst) == 'sub.rdivmod'
+assert ob**os_inst == ('sub.rpow', None)
+assert pow(ob, os_inst, 7) == ('sub.rpow', 7)
+assert (ob & os_inst) == 'sub.rand'
+assert (ob | os_inst) == 'sub.ror'
+assert (ob ^ os_inst) == 'sub.rxor'
+assert (ob << os_inst) == 'sub.rlshift'
+assert (ob >> os_inst) == 'sub.rrshift'
+
+# Same-class and unoverridden subclass fall back to Base direct dunder first.
+assert os_inst + os_inst == 'base.add'
+assert ob + oi == 'base.add'
+
+# Inherited or identical __radd__ does NOT preempt Base.__add__, unless Base.__add__ declines.
+radd_log = []
+
+
+class RaddBase:
+    def __add__(self, o):
+        radd_log.append(('add', type(self).__name__))
+        return 'base.add'
+
+    def __radd__(self, o):
+        radd_log.append(('radd', type(self).__name__))
+        return 'base.radd'
+
+
+class RaddSubInherited(RaddBase):
+    pass
+
+
+assert RaddBase() + RaddSubInherited() == 'base.add'
+assert radd_log == [('add', 'RaddBase')]
+
+radd_decline_log = []
+
+
+class RaddDeclineBase:
+    def __add__(self, o):
+        radd_decline_log.append(('add', type(self).__name__))
+        return NotImplemented
+
+    def __radd__(self, o):
+        radd_decline_log.append(('radd', type(self).__name__))
+        return 'fallback.radd'
+
+
+class RaddDeclineSub(RaddDeclineBase):
+    pass
+
+
+assert RaddDeclineBase() + RaddDeclineSub() == 'fallback.radd'
+assert radd_decline_log == [('add', 'RaddDeclineBase'), ('radd', 'RaddDeclineSub')]
+
+# Sub overriding __radd__ and returning NotImplemented falls back to Base.__add__ once.
+sub_decline_log = []
+
+
+class SubDecline(OpBase):
+    def __radd__(self, o):
+        sub_decline_log.append('sub.radd')
+        return NotImplemented
+
+
+assert OpBase() + SubDecline() == 'base.add'
+assert sub_decline_log == ['sub.radd']
+
+
+# Shared function object on both classes is not considered overloaded.
+def shared_radd(self, o):
+    return 'shared.radd'
+
+
+class SharedBase:
+    def __add__(self, o):
+        return 'shared.add'
+
+    __radd__ = shared_radd
+
+
+class SharedSub(SharedBase):
+    __radd__ = shared_radd
+
+
+assert SharedBase() + SharedSub() == 'shared.add'
+
+
+# Overriding __radd__ with None preempts Base.__add__ and raises TypeError.
+class NoneRaddSub(RaddBase):
+    __radd__ = None
+
+
+try:
+    RaddBase() + NoneRaddSub()
+    assert False, 'expected TypeError calling None __radd__'
+except TypeError as exc:
+    assert str(exc) == "'NoneType' object is not callable"
+
+# Rich equality (== and !=) tries strict subclass first even when inherited.
+eq_log = []
+
+
+class EqBase:
+    def __eq__(self, o):
+        eq_log.append((type(self).__name__, type(o).__name__))
+        return True
+
+
+class EqSubInherited(EqBase):
+    pass
+
+
+class EqSubOverride(EqBase):
+    def __eq__(self, o):
+        eq_log.append(('override', type(self).__name__, type(o).__name__))
+        return False
+
+
+assert EqBase() == EqSubInherited()
+assert eq_log == [('EqSubInherited', 'EqBase')]
+eq_log.clear()
+assert not (EqBase() == EqSubOverride())
+assert EqBase() != EqSubOverride()
+assert eq_log == [
+    ('override', 'EqSubOverride', 'EqBase'),
+    ('override', 'EqSubOverride', 'EqBase'),
+]
+
+
+# Indirect solid-base layout conflict across user exception classes and object.__setattr__ args coercion
+class UserOsErr(OSError):
+    pass
+
+
+class UserSynErr(SyntaxError):
+    pass
+
+
+try:
+
+    class ConflictUserExc(UserOsErr, UserSynErr):
+        pass
+
+    assert False, 'expected layout conflict TypeError'
+except TypeError as exc:
+    assert str(exc) == 'multiple bases have instance lay-out conflict'
+
+os_inst_args = UserOsErr('init')
+object.__setattr__(os_inst_args, 'args', [10, 20])
+assert os_inst_args.args == (10, 20)
+
+plain_inst_args = EqBase()
+object.__setattr__(plain_inst_args, 'args', [10, 20])
+assert plain_inst_args.args == [10, 20]
 
 print('success')

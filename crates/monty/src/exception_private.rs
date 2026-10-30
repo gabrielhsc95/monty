@@ -11,7 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{DropWithContext, HeapData, HeapRead},
+    heap::{DropWithContext, HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     py_value::PyValue,
@@ -54,6 +54,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -86,6 +87,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -122,6 +124,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -1713,6 +1716,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for module not found errors
+            origin_heap_id: None,
         })
     }
 
@@ -2788,9 +2792,10 @@ impl SimpleException {
     pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
         ExceptionRaise {
             exc: self,
-            frame: Some(RawStackFrame::from_position(position)),
+            frame: Some(Box::new(RawStackFrame::from_position(position))),
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 
@@ -2837,7 +2842,7 @@ impl<'h> HeapRead<'h, SimpleException> {
 pub struct ExceptionRaise {
     pub exc: SimpleException,
     /// Innermost executed frame, with callers linked as parents.
-    pub frame: Option<RawStackFrame>,
+    pub frame: Option<Box<RawStackFrame>>,
     /// Resolved innermost location of a rejected snippet, independent of its discarded intern IDs.
     pub snippet_frame: Option<Box<StackFrame>>,
     /// Whether to hide the caret marker when creating the stack frame.
@@ -2846,6 +2851,9 @@ pub struct ExceptionRaise {
     /// for attribute SET errors. This flag allows error creators to specify
     /// whether the caret should be hidden.
     pub hide_caret: bool,
+    /// Originating heap ID if the exception was instantiated on the heap.
+    #[serde(default)]
+    pub origin_heap_id: Option<HeapId>,
 }
 
 impl From<SimpleException> for ExceptionRaise {
@@ -2855,6 +2863,7 @@ impl From<SimpleException> for ExceptionRaise {
             frame: None,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 }
@@ -2866,6 +2875,7 @@ impl From<MontyException> for ExceptionRaise {
             frame: None,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 }
@@ -2904,7 +2914,7 @@ impl ExceptionRaise {
             // No frame yet - create one
             let mut new_frame = RawStackFrame::new(position, name, None);
             new_frame.hide_caret = hide_caret;
-            self.frame = Some(new_frame);
+            self.frame = Some(Box::new(new_frame));
         }
     }
 
@@ -2939,7 +2949,7 @@ impl ExceptionRaise {
             .frame
             .map(|frame| {
                 let mut frames = Vec::new();
-                let mut current = Some(&frame);
+                let mut current = Some(frame.as_ref());
                 while let Some(f) = current {
                     let fname_id = f.position.filename;
                     // An `eval()` / `exec()` snippet resolves against its own
@@ -3145,6 +3155,7 @@ fn import_error_without_caret(msg: String) -> RunError {
         frame: None,
         snippet_frame: None,
         hide_caret: true,
+        origin_heap_id: None,
     })
 }
 

@@ -119,20 +119,11 @@ order and error wording, but with these divergences:
     external function or OS call from inside `__new__` or `__init_subclass__` raises
     `NotImplementedError` rather than suspending to the host (inherited synchronous
     `__init__` does support suspension and snapshotting).
-- **Subclass reflected operator precedence**: In `Base() + Sub()` and `Base() == Sub()`, Monty currently tries `Base.__add__` / `Base.__eq__` before `Sub.__radd__` / `Sub.__eq__`.
-- **Zero-argument `super()` in nested closures & lexical `__class__`**: Zero-arg `super()` works directly inside methods and comprehensions in methods, not yet inside nested `def` / `lambda` closures within methods, and reading `__class__` as a free variable is not yet synthesized by the compiler.
-- **Attribute reads vs direct calls on built-in descriptors**: `super().__init__()`, `Cls.__init_subclass__()`, and `Cls.mro()` work as direct calls, whereas reading `super().__init__`, `Cls.__new__` (when not overridden), or `Cls.mro` via `getattr` raises `AttributeError`.
 - **Protocol dunders on `super()` do not fall back to `object`.** When attribute
     lookup on a `super()` object misses in all user-defined base classes, only
     `__init__`, `__new__`, and `__init_subclass__` dispatch to `object`. Built-in
     protocol methods (`__repr__`, `__str__`, `__eq__`, `__hash__`) raise
     `AttributeError` rather than falling back to `object`'s implementations.
-- **Zero-argument `super()` in dynamic class factories skips re-applied mixin levels.**
-    Monty identifies the defining class of a zero-argument `super()` call by inspecting
-    the `__class__` cell closure or falling back to matching `FunctionId` against class
-    namespaces. When a class factory dynamically generates multiple classes sharing the same
-    function body without an implicit `__class__` cell (e.g. `add_one(add_one(A))`), the
-    method resolves to the earlier class, bypassing the intermediate subclass.
 - **Dataclass inheritance does not inherit fields**: subclassing a `@dataclass`
     only discovers fields declared directly on the subclass body; ancestor fields
     are not included in the synthesized `__init__` or `__dataclass_fields__`.
@@ -488,8 +479,8 @@ every construction request. Divergences:
     featureless instance.
 - **`class Foo(object):` is accepted**, equivalent to `class Foo:`.
 - **Members on `object`**: `__name__`, `__class__`, `__bases__`, `__mro__`, `mro()`,
-    `__new__`, `__init_subclass__`, and `__setattr__` resolve. Other members CPython's
-    `object` carries (`__doc__`, `__init__`, `__eq__`, `__getattribute__`,
+    `__new__`, `__init__`, `__init_subclass__`, and `__setattr__` resolve. Other members
+    CPython's `object` carries (`__doc__`, `__eq__`, `__getattribute__`,
     `__qualname__`, `__module__`, `__dict__`) raise `AttributeError`.
 - **`object.__setattr__` accepts only instances of sandbox-defined classes.**
     Anything else raises CPython's
