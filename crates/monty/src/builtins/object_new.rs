@@ -52,6 +52,23 @@ pub fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
             ))
         }
         Value::Ref(class_id) => {
+            match vm.heap.get(*class_id) {
+                HeapData::NamedTupleClass(nt) => {
+                    let name = nt.name(vm.interns).to_owned();
+                    extra_args.drop_with(vm.heap);
+                    return Err(ExcType::type_error(format!(
+                        "object.__new__({name}) is not safe, use tuple.__new__()"
+                    )));
+                }
+                HeapData::HostClassType(ty) => {
+                    let name = ty.name(vm.interns).to_owned();
+                    extra_args.drop_with(vm.heap);
+                    return Err(ExcType::type_error(format!(
+                        "object.__new__({name}) is not safe, use {name}.__new__()"
+                    )));
+                }
+                _ => {}
+            }
             let HeapData::Class(cls) = vm.heap.get(*class_id) else {
                 extra_args.drop_with(vm.heap);
                 let type_name = cls_val.py_type_name(vm);

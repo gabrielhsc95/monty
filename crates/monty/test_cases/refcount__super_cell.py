@@ -28,6 +28,8 @@ def create_temporary_cycles():
     tc = TempChild()
     assert tc.v() == 15
     assert tc.who() is TempChild
+    # Also form an Instance <-> Super cycle so GC traverses `Super::py_dec_ref_ids`.
+    tc.sup = super(TempChild, tc)
 
     class RejectingBase:
         def __init_subclass__(cls):

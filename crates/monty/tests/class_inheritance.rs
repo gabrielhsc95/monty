@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
-use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{CompileOptions, ExcType, MontyObject, MontyUuid, PrintWriter, ResourceLimits, ResourceTracker};
 
 fn run(code: &str) {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
@@ -2721,4 +2721,112 @@ class Sub(Base):
         )
         .unwrap();
     assert_eq!(output, MontyObject::int(12));
+}
+
+#[test]
+fn host_class_type_inheritance_issubclass_super_and_new() {
+    let code = r#"
+class Plain:
+    pass
+
+assert issubclass(host_cls, host_cls)
+assert not issubclass(host_cls, other_cls)
+assert issubclass(host_cls, object)
+assert not issubclass(host_cls, int)
+assert not issubclass(host_cls, Plain)
+assert not issubclass(Plain, host_cls)
+assert not issubclass(int, host_cls)
+assert isinstance(host_cls, type)
+assert isinstance(host_inst, host_cls)
+assert not isinstance(host_inst, other_cls)
+
+s_inst = super(host_cls, host_inst)
+assert repr(s_inst) == "<super: <class 'HostPt'>, <HostPt object>>"
+assert s_inst.__self_class__ is host_cls
+
+s_cls = super(object, host_cls)
+assert repr(s_cls) == "<super: <class 'object'>, <HostPt object>>"
+assert s_cls.__self_class__ is host_cls
+
+try:
+    super(host_cls, 42)
+    assert False
+except TypeError as e:
+    assert str(e) == 'super(type, obj): obj (instance of int) is not an instance or subtype of type (HostPt).'
+
+try:
+    object.__new__(host_cls)
+    assert False
+except TypeError as e:
+    assert str(e) == 'object.__new__(HostPt) is not safe, use HostPt.__new__()'
+
+try:
+    ValueError.__new__(host_cls)
+    assert False
+except TypeError as e:
+    assert str(e) == 'ValueError.__new__(HostPt): HostPt is not a subtype of ValueError'
+
+1
+"#;
+    let host_cls = MontyObject::class_type("HostPt", MontyUuid::from_u128(10), true, false, []);
+    let host_inst = MontyObject::class_instance(
+        MontyObject::class_type("HostPt", MontyUuid::from_u128(10), true, false, []),
+        MontyUuid::from_u128(11),
+        [],
+    );
+    let other_cls = MontyObject::class_type("OtherHost", MontyUuid::from_u128(12), true, false, []);
+    let mut ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["host_cls".to_owned(), "host_inst".to_owned(), "other_cls".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let res = ex.run_no_limits(vec![host_cls, host_inst, other_cls]).unwrap();
+    assert_eq!(res, MontyObject::int(1));
+}
+
+#[test]
+fn unhandled_custom_exception_str_resource_limit_is_uncatchable() {
+    let width = i64::try_from(isize::MAX as usize / 2 + 1).unwrap();
+
+    let unhandled_code = r"
+class OomStrError(Exception):
+    def __str__(self):
+        return ''.ljust(width, 'é')
+
+raise OomStrError()
+";
+    let err = MontyRun::new(
+        unhandled_code.to_owned(),
+        "test.py",
+        vec!["width".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(vec![MontyObject::int(width)])
+    .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+    assert_eq!(err.custom_type_name(), None);
+
+    let repr_code = r"
+class OomRepr:
+    def __repr__(self):
+        return ''.ljust(width, 'é')
+
+try:
+    repr(OomRepr())
+except BaseException:
+    pass
+";
+    let err2 = MontyRun::new(
+        repr_code.to_owned(),
+        "test.py",
+        vec!["width".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(vec![MontyObject::int(width)])
+    .unwrap_err();
+    assert_eq!(err2.exc_type(), ExcType::MemoryError);
 }

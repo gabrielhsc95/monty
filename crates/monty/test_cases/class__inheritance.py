@@ -1429,4 +1429,31 @@ assert eq_log == [
     ('override', 'EqSubOverride', 'EqBase'),
 ]
 
+
+# Indirect solid-base layout conflict across user exception classes and object.__setattr__ args coercion
+class UserOsErr(OSError):
+    pass
+
+
+class UserSynErr(SyntaxError):
+    pass
+
+
+try:
+
+    class ConflictUserExc(UserOsErr, UserSynErr):
+        pass
+
+    assert False, 'expected layout conflict TypeError'
+except TypeError as exc:
+    assert str(exc) == 'multiple bases have instance lay-out conflict'
+
+os_inst_args = UserOsErr('init')
+object.__setattr__(os_inst_args, 'args', [10, 20])
+assert os_inst_args.args == (10, 20)
+
+plain_inst_args = EqBase()
+object.__setattr__(plain_inst_args, 'args', [10, 20])
+assert plain_inst_args.args == [10, 20]
+
 print('success')

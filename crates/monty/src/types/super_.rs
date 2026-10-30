@@ -16,6 +16,7 @@ use crate::{
         object_init::{builtin_exception_init, builtin_object_init},
         object_init_subclass::builtin_object_init_subclass,
         object_new::{builtin_exception_new, builtin_object_new},
+        type_of_ref,
     },
     bytecode::{CallResult, VM},
     defer_drop,
@@ -279,6 +280,14 @@ fn get_search_bases<'a>(type_arg: &Value, obj_arg: &Value, vm: &'a VM<'_>) -> Op
     }
 }
 
+fn resolve_super_self_class(type_arg: &Value, obj_arg: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    if is_type_value(obj_arg, vm) && issubclass_check(obj_arg, type_arg, vm)? {
+        Ok(obj_arg.clone_with_heap(vm.heap))
+    } else {
+        Ok(type_of_ref(vm, obj_arg))
+    }
+}
+
 fn super_mro_lookup(type_arg: &Value, obj_arg: &Value, attr_str: &str, vm: &mut VM<'_>) -> Option<Value> {
     let search_bases = get_search_bases(type_arg, obj_arg, vm)?;
 
@@ -298,8 +307,18 @@ fn super_mro_lookup(type_arg: &Value, obj_arg: &Value, attr_str: &str, vm: &mut 
                         && (!is_obj_class || attr_str == "__init_subclass__")
                         && is_method_value(&member_val, vm)
                     {
+                        let receiver = if attr_str == "__init_subclass__"
+                            && let Value::Ref(id) = obj_arg
+                            && let HeapData::Instance(inst) = vm.heap.get(*id)
+                        {
+                            let cid = inst.class();
+                            vm.heap.inc_ref(cid);
+                            Value::Ref(cid)
+                        } else {
+                            obj_arg.clone_with_heap(vm.heap)
+                        };
                         let bound = BoundMethod {
-                            instance: obj_arg.clone_with_heap(vm.heap),
+                            instance: receiver,
                             func: member_val,
                         };
                         return Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))));
@@ -337,23 +356,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let s = self.get(vm.heap);
-        let type_name = type_or_class_name(&s.type_arg, vm);
-        match &s.obj_arg {
-            Some(obj) => {
-                let obj_type_name = match obj {
-                    Value::Ref(id) => match vm.heap.get(*id) {
-                        HeapData::Class(_) => class_name(*id, vm.heap, vm.interns),
-                        HeapData::HostClassType(ty) => Cow::Borrowed(ty.name(vm.interns)),
-                        _ => obj.py_type_name(vm),
-                    },
-                    Value::Builtin(Builtins::Type(t)) => t.name(vm.heap, vm.interns),
-                    _ => obj.py_type_name(vm),
-                };
-                write!(f, "<super: <class '{type_name}'>, <{obj_type_name} object>>")?;
-            }
-            None => {
-                write!(f, "<super: <class '{type_name}'>, NULL>")?;
-            }
+        let type_arg = s.type_arg.clone_with_heap(vm.heap);
+        let obj_arg = s.obj_arg.as_ref().map(|o| o.clone_with_heap(vm.heap));
+        defer_drop!(type_arg, vm);
+        if let Some(obj) = obj_arg {
+            defer_drop!(obj, vm);
+            let self_cls = resolve_super_self_class(type_arg, obj, vm)?;
+            defer_drop!(self_cls, vm);
+            let type_name = type_or_class_name(type_arg, vm);
+            let obj_type_name = type_or_class_name(self_cls, vm);
+            write!(f, "<super: <class '{type_name}'>, <{obj_type_name} object>>")?;
+        } else {
+            let type_name = type_or_class_name(type_arg, vm);
+            write!(f, "<super: <class '{type_name}'>, NULL>")?;
         }
         Ok(())
     }
@@ -374,24 +389,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
             return Ok(Some(CallResult::Value(val)));
         }
         if attr_str == "__self_class__" {
-            let val = match &s.obj_arg {
-                Some(obj) => match obj {
-                    Value::Ref(id) => match vm.heap.get(*id) {
-                        HeapData::Instance(inst) => {
-                            let cid = inst.class();
-                            vm.heap.inc_ref(cid);
-                            Value::Ref(cid)
-                        }
-                        HeapData::Class(_) => {
-                            vm.heap.inc_ref(*id);
-                            Value::Ref(*id)
-                        }
-                        _ => Value::Builtin(Builtins::Type(obj.py_type(vm))),
-                    },
-                    _ => Value::Builtin(Builtins::Type(obj.py_type(vm))),
-                },
-                None => Value::None,
+            let Some(obj) = s.obj_arg.as_ref().map(|o| o.clone_with_heap(vm.heap)) else {
+                return Ok(Some(CallResult::Value(Value::None)));
             };
+            let type_arg = s.type_arg.clone_with_heap(vm.heap);
+            defer_drop!(obj, vm);
+            defer_drop!(type_arg, vm);
+            let val = resolve_super_self_class(type_arg, obj, vm)?;
             return Ok(Some(CallResult::Value(val)));
         }
 
@@ -412,15 +416,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
                 let mut found = None;
                 for base in search_bases {
                     match base {
-                        ClassBase::Class(ancestor_id) => {
-                            if let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
-                                && let Some(member) =
-                                    ancestor_cls.namespace().get_by_str("__new__", vm.heap, vm.interns)
-                            {
-                                found = Some(member.clone_with_heap(vm.heap));
-                                break;
-                            }
-                        }
+                        ClassBase::Class(_) => {}
                         ClassBase::BuiltinExc(e) => {
                             let bound = BoundMethod {
                                 instance: Value::Builtin(Builtins::ExcType(*e)),
@@ -553,16 +549,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
             if let Some(search_bases) = get_search_bases(type_arg, obj, vm) {
                 for base in search_bases {
                     match base {
-                        ClassBase::Class(ancestor_id) => {
-                            if let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
-                                && let Some(member) =
-                                    ancestor_cls.namespace().get_by_str("__new__", vm.heap, vm.interns)
-                            {
-                                let member_val = member.clone_with_heap(vm.heap);
-                                defer_drop!(member_val, vm);
-                                return vm.call_function(member_val, args);
-                            }
-                        }
+                        ClassBase::Class(_) => {}
                         ClassBase::BuiltinExc(e) => {
                             return builtin_exception_new(vm, args.prepend(Value::Builtin(Builtins::ExcType(*e))))
                                 .map(CallResult::Value);
