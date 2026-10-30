@@ -71,7 +71,7 @@ pub(crate) fn prepare_with_existing_names(
 }
 
 /// How the top-level names of an `eval()` / `exec()` snippet bind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SnippetNames {
     /// An ordinary module compile against the session `NameMap` (`LoadGlobal`):
     /// the implicit form at module scope.
@@ -868,6 +868,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             signature,
                             body,
                             is_async,
+                            annotations,
                         },
                     decorators,
                 } => {
@@ -878,7 +879,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .into_iter()
                         .map(|d| self.prepare_expression(d))
                         .collect::<Result<Vec<_>, ParseError>>()?;
-                    let func = self.prepare_function_def(name, &signature, body, is_async)?;
+                    let func = self.prepare_function_def(name, &signature, body, is_async, annotations)?;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -1733,6 +1734,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         parsed_sig: &ParsedSignature,
         body: Vec<ParseNode>,
         is_async: bool,
+        annotations: Vec<(StringId, StringId)>,
     ) -> Result<PreparedFunctionDef, ParseError> {
         // A `def` (top-level, nested, or method — class bodies are function scopes
         // too) binds its name in the enclosing scope.
@@ -1872,6 +1874,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async,
+            annotations,
         })
     }
 
@@ -2052,6 +2055,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs: Vec::new(),
             is_async: false,
+            annotations: Vec::new(),
         };
 
         Ok(Node::ClassDef {
@@ -2218,6 +2222,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async: false,
+            annotations: Vec::new(),
         };
 
         Ok(ExprLoc::new(
