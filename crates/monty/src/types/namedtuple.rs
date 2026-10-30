@@ -41,7 +41,7 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
     types::{
-        Dict, List, Type, Union, allocate_tuple,
+        BuiltinType, Dict, List, Type, Union, allocate_tuple,
         iter::collect_owned_iterable,
         long_int::repeat_count,
         py_trait::LazyHeapSet,
@@ -741,7 +741,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
         let names = self.get(vm.heap).field_names.clone();
         let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(names.len());
         for (i, name) in names.iter().enumerate() {
-            let key = field_name_value(name, vm);
+            let key = name.as_value(vm.heap);
             let value = self.get(vm.heap).items[i].clone_with_heap(vm.heap);
             pairs.push((key, value));
         }
@@ -934,7 +934,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
             }
             Some(StaticStrings::DunderModule) => self.get(vm.heap).module.clone_with_heap(vm.heap),
             _ if attr.as_str(vm.interns) == "__bases__" => {
-                let items = vec![Value::Builtin(Builtins::Type(Type::Tuple))];
+                let items = vec![Value::Builtin(Builtins::Type(BuiltinType::Tuple))];
                 allocate_tuple(items.into(), vm.heap)
             }
             _ if attr.as_str(vm.interns) == "__mro__" => {
@@ -942,8 +942,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
                 vm.heap.inc_ref(self_id);
                 let items = vec![
                     Value::Ref(self_id),
-                    Value::Builtin(Builtins::Type(Type::Tuple)),
-                    Value::Builtin(Builtins::Type(Type::Object)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ];
                 allocate_tuple(items.into(), vm.heap)
             }
@@ -976,8 +976,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
             vm.heap.inc_ref(self_id);
             let items = vec![
                 Value::Ref(self_id),
-                Value::Builtin(Builtins::Type(Type::Tuple)),
-                Value::Builtin(Builtins::Type(Type::Object)),
+                Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+                Value::Builtin(Builtins::Type(BuiltinType::Object)),
             ];
             let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
             Ok(CallResult::Value(Value::Ref(list_id)))
@@ -1000,7 +1000,7 @@ impl<'h> HeapRead<'h, NamedTupleClass> {
         let start = n - n_defaults;
         let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(n_defaults);
         for j in 0..n_defaults {
-            let key = field_name_value(&self.get(vm.heap).field_names[start + j].clone(), vm);
+            let key = self.get(vm.heap).field_names[start + j].as_value(vm.heap);
             let value = self.get(vm.heap).defaults[j].clone_with_heap(vm.heap);
             pairs.push((key, value));
         }
@@ -1313,16 +1313,8 @@ pub(crate) fn build_namedtuple(
 
 /// Builds a tuple `Value` of the given field names (as string values).
 fn fields_tuple_from(names: &[EitherStr], vm: &mut VM<'_>) -> Value {
-    let items: Vec<Value> = names.iter().map(|name| field_name_value(name, vm)).collect();
+    let items: Vec<Value> = names.iter().map(|name| name.as_value(vm.heap)).collect();
     allocate_tuple(SmallVec::from_vec(items), vm.heap)
-}
-
-/// Converts an interned/heap field name into a string `Value`.
-fn field_name_value(name: &EitherStr, vm: &mut VM<'_>) -> Value {
-    match name {
-        EitherStr::Interned(id) => Value::InternString(*id),
-        EitherStr::Heap(s) => allocate_string(s.clone(), vm.heap),
-    }
 }
 
 /// Normalizes call kwargs into `(name, value)` pairs, dropping non-interned

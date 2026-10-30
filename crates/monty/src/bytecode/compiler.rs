@@ -21,7 +21,7 @@ use super::{
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
         ImportName, Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, Submodule,
@@ -1884,7 +1884,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // - Callable must be a builtin type constructor (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
         if let Callable::Builtin(Builtins::Type(t)) = callable
-            && let Some(type_id) = t.callable_to_u8()
+            && let Some(type_id) = Type::from(*t).callable_to_u8()
             && let Some(arg_count) = self.compile_builtin_call(args, call_pos)?
         {
             // Optimization applied - CallBuiltinType emitted
@@ -2347,7 +2347,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
             Builtins::ExcType(exc_type) => self.interns.get_string_id_by_name(&exc_type.to_string())?,
             Builtins::Type(type_) => {
-                let name = type_.builtin_name()?;
+                let name = Type::from(type_).builtin_name()?;
                 self.interns.get_string_id_by_name(name)?
             }
         };
@@ -4056,11 +4056,29 @@ impl CompileError {
         }
     }
 
+    /// Converts an imported file's compile error; see `ParseError::into_file_run_error`.
+    pub(crate) fn into_file_run_error(self, path: &str, source: &str) -> RunError {
+        let (exc_type, msg, frame) = self.into_parts(path, source);
+        RunError::Exc(ExceptionRaise {
+            exc: SimpleException::new_msg(exc_type, msg),
+            frame: None,
+            snippet_frame: Some(Box::new(frame)),
+            hide_caret: true,
+            origin_heap_id: None,
+        })
+    }
+
     /// Converts this compile error into a Python exception.
     ///
     /// Syntax errors omit the frame name; unsupported constructs report a
     /// runtime-style location with the stored exception type and message.
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
+        let (exc_type, msg, frame) = self.into_parts(filename, source);
+        MontyException::with_traceback(exc_type, Some(msg), vec![frame])
+    }
+
+    /// The exception type, message and the frame locating the error in `filename`.
+    fn into_parts(self, filename: &str, source: &str) -> (ExcType, String, StackFrame) {
         let mut source_map = SourceMap::new(source);
         let mut frame = if self.exc_type == ExcType::SyntaxError {
             // SyntaxError uses different format: no `, in <module>`
@@ -4072,7 +4090,7 @@ impl CompileError {
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
-        MontyException::with_traceback(self.exc_type, Some(self.message.into_owned()), vec![frame])
+        (self.exc_type, self.message.into_owned(), frame)
     }
 }
 

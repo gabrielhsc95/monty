@@ -2694,7 +2694,7 @@ fn collect_scope_info_from_node(
             }
         }
         Node::FunctionDef {
-            def: RawFunctionDef { name, .. },
+            def: RawFunctionDef { name, signature, .. },
             decorators,
         } => {
             // Function definition creates a local binding for the function name
@@ -2703,6 +2703,10 @@ fn collect_scope_info_from_node(
             // Decorators evaluate in *this* scope, so a walrus in one binds here.
             for decorator in decorators {
                 collect_assigned_names_from_expr(decorator, assigned_names, interner);
+            }
+            // Defaults also evaluate in this scope, unlike the function body.
+            for default in signature.default_exprs() {
+                collect_assigned_names_from_expr(default, assigned_names, interner);
             }
         }
         Node::ClassDef {

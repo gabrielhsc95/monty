@@ -13,7 +13,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StaticStrings},
     modules::{
         ModuleFunctions, collections, csv,
         hashlib::{self, Blake2Kind},
@@ -22,8 +22,8 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        BoundMethod, Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
-        Set, Slice, Str, TimeZone, Tuple,
+        BoundMethod, BuiltinType, Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
+        Random, Range, Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -45,6 +45,9 @@ use crate::{
 /// Some variants are Python builtins accessible by name (e.g., `int`, `list`),
 /// while others are internal types only available through imports or introspection
 /// (e.g., `TextIOWrapper`, `PosixPath`).
+///
+/// Variant names are persisted in dumps; renames require a serde alias.
+/// Variant order is also used by builtin id() through postcard.
 #[derive(
     Debug,
     Clone,
@@ -109,7 +112,7 @@ pub enum Type {
     DictValues,
     Set,
     FrozenSet,
-    /// The type of a host-backed class instance ([`HeapData::HostClass`]),
+    /// The type of a host-backed class instance ([`crate::heap::HeapData::HostClass`]),
     /// for internal dispatch only: `type(x)` materializes a `HostClassType`
     /// instead, so it never reaches Python code or the host boundary.
     ///
@@ -125,11 +128,12 @@ pub enum Type {
     /// reference — `Type` is `Copy`, untracked by refcounting, and has no
     /// `Drop`. A `Type::Instance` is only valid while the value it was derived
     /// from is alive (an instance holds a counted ref to its class, taken in
-    /// `VM::instantiate_class`). It must NEVER be stored long-lived,
+    /// `VM::instantiate_class` or `allocate_empty_like`). It must NEVER be stored long-lived,
     /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
     /// `type()` builtin returns the class object itself for instances), or
     /// converted to `MontyType`, which has no class variant (a sandbox class
     /// crosses the boundary as its own `ClassType` arena node).
+    /// `Builtins::Type` now accepts only `BuiltinType`, preventing storage there at compile time.
     #[strum(disabled)]
     Instance(HeapId),
     /// Exception types render/parse via `ExcType`'s own strum name
@@ -330,8 +334,6 @@ pub enum Type {
     /// A resolved `csv` dialect, CPython's `_csv.Dialect`.
     #[strum(serialize = "_csv.Dialect")]
     CsvDialect,
-    /// `super`, the proxy type created by `super(...)`.
-    Super,
     /// `decimal.Decimal`.
     #[strum(serialize = "decimal.Decimal")]
     Decimal,
@@ -345,11 +347,13 @@ pub enum Type {
     /// The manager `decimal.localcontext()` returns.
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    /// `super`, the proxy type created by `super(...)`.
+    Super,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
-/// variant — the single name table backing [`Type::name`] and `MontyType`'s
-/// `Display`.
+/// variant, using the same name table as [`Type::name`].
+/// `MontyType` has its own strum-derived name table in `monty-types`.
 ///
 /// The names live on the enum via the `IntoStaticStr` derive
 /// (`serialize_all = "lowercase"` plus per-variant `serialize` overrides);
@@ -359,10 +363,9 @@ pub enum Type {
 /// On `Instance`, which has no static name — callers with heap access must
 /// resolve the real class name via [`Type::name`]. Well-formed data never
 /// puts an `Instance` where no heap exists (`Builtins::Type`, `MontyObject`,
-/// the wire protocol), so this is a programmer-error tripwire. A crafted
-/// snapshot payload *can* smuggle one in, but snapshot bytes are not a
-/// panic-free boundary anyway — any bogus `HeapId` in them panics on first
-/// heap access.
+/// the wire protocol), so this is a programmer-error tripwire.
+/// `BuiltinType` rejects `Instance` during snapshot deserialization, including
+/// for `Builtins::Type` and generic alias origins.
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match *self {
@@ -644,13 +647,8 @@ impl Type {
     /// Keeps classmethod behavior centralized with type semantics instead of VM
     /// call plumbing. Any other name is looked up as a plain attribute and the
     /// result called, so `list.__name__()` raises `'str' object is not callable`.
-    pub(crate) fn call_class_method(
-        self,
-        method_id: StringId,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
-        match (self, vm.interns.static_string(method_id)) {
+    pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        match (self, attr.static_string(vm.interns)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
@@ -676,7 +674,7 @@ impl Type {
             (Self::Decimal, Some(StaticStrings::FromNumber)) => {
                 decimal::py::class_from_number(vm, args).map(CallResult::Value)
             }
-            (Self::Decimal, _) if vm.interns.get_str(method_id) == "from_float" => {
+            (Self::Decimal, _) if attr.as_str(vm.interns) == "from_float" => {
                 decimal::py::class_from_float(vm, args).map(CallResult::Value)
             }
             (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
@@ -694,7 +692,7 @@ impl Type {
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `class_getattr`.
-            (Self::Object, _) if vm.interns.get_str(method_id) == "__setattr__" => {
+            (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
             (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
@@ -706,31 +704,36 @@ impl Type {
             (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
                 let name = format!("{}.__class_getitem__", ty.dunder_name(vm.heap, vm.interns));
                 let key = args.get_one_arg(&name, vm.heap)?;
-                Ok(CallResult::Value(GenericAlias::subscript(ty, key, vm)))
+                Ok(CallResult::Value(GenericAlias::subscript(
+                    ty.try_into().expect("generic origins are builtin types"),
+                    key,
+                    vm,
+                )))
             }
-            _ if vm.interns.get_str(method_id) == "mro" => {
-                builtin_type_mro(vm, args.prepend(Value::Builtin(Builtins::Type(self)))).map(CallResult::Value)
+            _ if attr.as_str(vm.interns) == "mro" => {
+                let self_builtin: BuiltinType = self.try_into().expect("builtin type");
+                builtin_type_mro(vm, args.prepend(Value::Builtin(Builtins::Type(self_builtin)))).map(CallResult::Value)
             }
-            _ if vm.interns.get_str(method_id) == "__init_subclass__" => {
-                builtin_object_init_subclass(vm, args.prepend(Value::Builtin(Builtins::Type(self))))
+            _ if attr.as_str(vm.interns) == "__init_subclass__" => {
+                let self_builtin: BuiltinType = self.try_into().expect("builtin type");
+                builtin_object_init_subclass(vm, args.prepend(Value::Builtin(Builtins::Type(self_builtin))))
                     .map(CallResult::Value)
             }
-            (Self::Object, _) if vm.interns.get_str(method_id) == "__new__" => {
+            (Self::Object, _) if attr.as_str(vm.interns) == "__new__" => {
                 builtin_object_new(vm, args).map(CallResult::Value)
             }
-            (Self::Object, _) if vm.interns.get_str(method_id) == "__init__" => {
+            (Self::Object, _) if attr.as_str(vm.interns) == "__init__" => {
                 builtin_object_init(vm, args).map(CallResult::Value)
             }
             // The type's plain attributes (`list.__name__`); a missing name
             // raises the lookup's `type object 'list' has no attribute` error.
             _ => {
-                let attr = EitherStr::Interned(method_id);
-                if let Some(value) = self.class_getattr(&attr, vm) {
+                if let Some(value) = self.class_getattr(attr, vm) {
                     defer_drop!(value, vm);
                     vm.call_function(value, args)
                 } else {
                     args.drop_with(vm.heap);
-                    Err(self.attribute_error(&attr, vm))
+                    Err(self.attribute_error(attr, vm))
                 }
             }
         }
@@ -752,40 +755,41 @@ impl Type {
             let items = if self == Self::Object {
                 vec![]
             } else if self == Self::Bool {
-                vec![Value::Builtin(Builtins::Type(Self::Int))]
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Int))]
             } else if self == Self::DateTime {
-                vec![Value::Builtin(Builtins::Type(Self::Date))]
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Date))]
             } else if matches!(self, Self::DefaultDict | Self::Counter) {
-                vec![Value::Builtin(Builtins::Type(Self::Dict))]
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Dict))]
             } else {
-                vec![Value::Builtin(Builtins::Type(Self::Object))]
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Object))]
             };
             Some(allocate_tuple(items.into(), vm.heap))
         } else if attr.as_str(vm.interns) == "__mro__" {
+            let self_builtin: BuiltinType = self.try_into().expect("builtin type");
             let items = if self == Self::Object {
-                vec![Value::Builtin(Builtins::Type(Self::Object))]
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Object))]
             } else if self == Self::Bool {
                 vec![
-                    Value::Builtin(Builtins::Type(Self::Bool)),
-                    Value::Builtin(Builtins::Type(Self::Int)),
-                    Value::Builtin(Builtins::Type(Self::Object)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Bool)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Int)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
             } else if self == Self::DateTime {
                 vec![
-                    Value::Builtin(Builtins::Type(Self::DateTime)),
-                    Value::Builtin(Builtins::Type(Self::Date)),
-                    Value::Builtin(Builtins::Type(Self::Object)),
+                    Value::Builtin(Builtins::Type(BuiltinType::DateTime)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Date)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
             } else if matches!(self, Self::DefaultDict | Self::Counter) {
                 vec![
-                    Value::Builtin(Builtins::Type(self)),
-                    Value::Builtin(Builtins::Type(Self::Dict)),
-                    Value::Builtin(Builtins::Type(Self::Object)),
+                    Value::Builtin(Builtins::Type(self_builtin)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
             } else {
                 vec![
-                    Value::Builtin(Builtins::Type(self)),
-                    Value::Builtin(Builtins::Type(Self::Object)),
+                    Value::Builtin(Builtins::Type(self_builtin)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
             };
             Some(allocate_tuple(items.into(), vm.heap))
@@ -805,14 +809,16 @@ impl Type {
         } else if self == Self::Object && attr.as_str(vm.interns) == "__init__" {
             Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInit)))
         } else if attr.as_str(vm.interns) == "mro" {
+            let self_builtin: BuiltinType = self.try_into().ok()?;
             let bound = BoundMethod {
-                instance: Value::Builtin(Builtins::Type(self)),
+                instance: Value::Builtin(Builtins::Type(self_builtin)),
                 func: Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
             };
             Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
         } else if attr.as_str(vm.interns) == "__init_subclass__" {
+            let self_builtin: BuiltinType = self.try_into().ok()?;
             let bound = BoundMethod {
-                instance: Value::Builtin(Builtins::Type(self)),
+                instance: Value::Builtin(Builtins::Type(self_builtin)),
                 func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
             };
             Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
@@ -944,7 +950,6 @@ impl Type {
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),
             Self::Float => {
-                let interns = vm.interns;
                 let Some(v) = args.get_zero_one_arg("float", vm.heap)? else {
                     return Ok(Value::Float(0.0));
                 };
@@ -952,13 +957,9 @@ impl Type {
                 if let Some(value) = v.py_float(vm)? {
                     Ok(Value::Float(value))
                 } else {
-                    match v {
-                        Value::InternString(string_id) => {
-                            Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
-                        }
-                        Value::Ref(heap_id) if let HeapData::Str(s) = vm.heap.get(*heap_id) => {
-                            Ok(Value::Float(parse_f64_from_str(s.as_str())?))
-                        }
+                    match v.py_value(vm) {
+                        PyValue::Str(value) => Ok(Value::Float(parse_f64_from_str(value.as_str(vm))?)),
+                        PyValue::Bytes(value) => Ok(Value::Float(parse_f64_from_bytes(value.as_slice(vm))?)),
                         _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                     }
                 }
@@ -993,13 +994,27 @@ impl Type {
 /// - The special values `inf`, `-inf`, `infinity`, and `nan` (case-insensitive)
 /// - Underscore digit separators, strictly between two digits (`1_000.5`, `1e1_0`)
 pub(crate) fn parse_f64_from_str(value: &str) -> RunResult<f64> {
+    parse_f64(value).ok_or_else(|| value_error_could_not_convert_string_to_float(StringRepr(value)))
+}
+
+/// Parses ASCII bytes without accepting Unicode digits or whitespace encoded as UTF-8.
+fn parse_f64_from_bytes(value: &[u8]) -> RunResult<f64> {
+    str::from_utf8(value)
+        .ok()
+        .filter(|text| text.is_ascii())
+        .and_then(parse_f64)
+        .ok_or_else(|| value_error_could_not_convert_string_to_float(bytes_repr(value)))
+}
+
+/// Parses shared float syntax without constructing the caller-specific error.
+fn parse_f64(value: &str) -> Option<f64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(value_error_could_not_convert_string_to_float(value));
+        return None;
     }
     let stripped;
     let trimmed = if trimmed.contains('_') {
-        stripped = strip_underscores(trimmed).ok_or_else(|| value_error_could_not_convert_string_to_float(value))?;
+        stripped = strip_underscores(trimmed)?;
         stripped.as_str()
     } else {
         trimmed
@@ -1011,12 +1026,10 @@ pub(crate) fn parse_f64_from_str(value: &str) -> RunResult<f64> {
         "-inf" | "-infinity" => f64::NEG_INFINITY,
         "nan" | "+nan" => f64::NAN,
         "-nan" => -f64::NAN,
-        _ => trimmed
-            .parse::<f64>()
-            .map_err(|_| value_error_could_not_convert_string_to_float(value))?,
+        _ => trimmed.parse::<f64>().ok()?,
     };
 
-    Ok(parsed)
+    Some(parsed)
 }
 
 /// Removes digit-separator underscores, or returns `None` when one is not
@@ -1038,13 +1051,11 @@ pub(crate) fn strip_underscores(text: &str) -> Option<String> {
     Some(out)
 }
 
-/// Creates the `ValueError` raised by `float()` when a string cannot be parsed.
-///
-/// Matches CPython's message format: `could not convert string to float: '...'`.
-fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
+/// Creates a `float()` ValueError using the original str/bytes argument's Python representation.
+fn value_error_could_not_convert_string_to_float(value: impl fmt::Display) -> RunError {
     SimpleException::new_msg(
         ExcType::ValueError,
-        format!("could not convert string to float: {}", StringRepr(value)),
+        format!("could not convert string to float: {value}"),
     )
     .into()
 }
@@ -1081,15 +1092,9 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         None => int_convert(x, vm),
         Some(base) => {
             let base = int_base(base, vm)?;
-            let interns = vm.interns;
-            match x {
-                Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), base, vm.heap),
-                Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), base, vm.heap),
-                Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                    HeapData::Str(s) => parse_int_from_str(s.as_str(), base, vm.heap),
-                    HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), base, vm.heap),
-                    _ => Err(ExcType::type_error_int_non_string_with_base()),
-                },
+            match x.py_value(vm) {
+                PyValue::Str(value) => parse_int_from_str(value.as_str(vm), base, vm.heap),
+                PyValue::Bytes(value) => parse_int_from_bytes(value.as_slice(vm), base, vm.heap),
                 _ => Err(ExcType::type_error_int_non_string_with_base()),
             }
         }

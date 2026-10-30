@@ -7,6 +7,11 @@
 //! and [`Dump::load`]; whether the session was idle or suspended is the
 //! [`Session`] discriminant, not a separate tag.
 //!
+//! Inline builtin types serialize through `Type`, preserving the names and payloads
+//! written before `BuiltinType` was split out. Its own enum order is not the wire
+//! order: postcard encoding for builtin `id()` retains `Type::Instance`'s slot.
+//! See `builtin_type_tests` in `types/builtin_type.rs` and the legacy serialization fixture.
+//!
 //! # Naming contract
 //!
 //! The payload is self-describing: structs are maps keyed by field name and
@@ -56,7 +61,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 14;
+pub const DUMP_VERSION: u16 = 15;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.

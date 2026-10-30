@@ -3,7 +3,7 @@
 use std::{borrow::Cow, fmt::Write};
 
 use super::{
-    LazyHeapSet, PyTrait, Type,
+    BuiltinType, LazyHeapSet, PyTrait, Type,
     class::ClassBase,
     instance::{BoundMethod, class_name, is_method_value},
 };
@@ -211,7 +211,7 @@ fn type_or_class_name<'i>(val: &Value, vm: &'i VM<'_>) -> Cow<'i, str> {
             HeapData::HostClassType(ty) => Cow::Borrowed(ty.name(vm.interns)),
             _ => val.py_type_name(vm),
         },
-        Value::Builtin(Builtins::Type(t)) => t.name(vm.heap, vm.interns),
+        Value::Builtin(Builtins::Type(t)) => Type::from(*t).name(vm.heap, vm.interns),
         Value::Builtin(Builtins::ExcType(e)) => Cow::Borrowed((*e).into()),
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Cow::Borrowed("type"),
         _ => val.py_type_name(vm),
@@ -272,7 +272,7 @@ fn get_search_bases<'a>(type_arg: &Value, obj_arg: &Value, vm: &'a VM<'_>) -> Op
             .iter()
             .position(|b| matches!(b, ClassBase::BuiltinExc(exc) if exc == target_exc))?;
         Some(&self_class.mro()[pos + 1..])
-    } else if matches!(type_arg, Value::Builtin(Builtins::Type(Type::Object))) {
+    } else if matches!(type_arg, Value::Builtin(Builtins::Type(BuiltinType::Object))) {
         let pos = self_class.mro().iter().position(|b| matches!(b, ClassBase::Object))?;
         Some(&self_class.mro()[pos + 1..])
     } else {

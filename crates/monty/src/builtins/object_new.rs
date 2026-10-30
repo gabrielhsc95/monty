@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Dict, Instance, Type, class::ClassBase, tuple::allocate_tuple},
+    types::{BuiltinType, Dict, Instance, Type, allocate_tuple, class::ClassBase},
     value::Value,
 };
 
@@ -26,7 +26,7 @@ pub fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
     let extra_args: Vec<Value> = pos.collect();
 
     match cls_val {
-        Value::Builtin(Builtins::Type(Type::Object)) => {
+        Value::Builtin(Builtins::Type(BuiltinType::Object)) => {
             extra_args.drop_with(vm.heap);
             Err(ExcType::type_error("cannot create 'object' instances"))
         }
@@ -40,7 +40,7 @@ pub fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
         }
         Value::Builtin(Builtins::Type(t)) => {
             extra_args.drop_with(vm.heap);
-            let name = t.dunder_name(vm.heap, vm.interns);
+            let name = Type::from(*t).dunder_name(vm.heap, vm.interns);
             Err(ExcType::type_error(format!(
                 "object.__new__({name}) is not safe, use {name}.__new__()"
             )))
@@ -208,7 +208,7 @@ pub fn builtin_exception_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Valu
             }
         },
         Value::Builtin(Builtins::Type(t)) => {
-            let target_name = t.dunder_name(vm.heap, vm.interns).into_owned();
+            let target_name = Type::from(*t).dunder_name(vm.heap, vm.interns).into_owned();
             extra_args.drop_with(vm.heap);
             Err(ExcType::type_error(format!(
                 "{owner_name}.__new__({target_name}): {target_name} is not a subtype of {owner_name}"

@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait, Type, class::ClassBase},
+    types::{BuiltinType, Class, Dict, PyTrait, Type, class::ClassBase},
     value::Value,
 };
 
@@ -94,7 +94,9 @@ pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
         if t == Type::Type {
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Type))
         } else {
-            Value::Builtin(Builtins::Type(t))
+            Value::Builtin(Builtins::Type(
+                t.try_into().expect("instances return their class object"),
+            ))
         }
     }
 }
@@ -146,7 +148,7 @@ fn create_class(
     let mut seen_layout_root: Option<ExcType> = None;
     for base in tuple.as_slice() {
         match base {
-            Value::Builtin(Builtins::Type(Type::Object)) => {
+            Value::Builtin(Builtins::Type(BuiltinType::Object)) => {
                 if seen_object {
                     return Err(ExcType::type_error("duplicate base class object"));
                 }
@@ -155,7 +157,7 @@ fn create_class(
                 base_names.push("object");
             }
             Value::Builtin(Builtins::Type(ty)) => {
-                let type_name = ty.name(vm.heap, vm.interns);
+                let type_name = Type::from(*ty).name(vm.heap, vm.interns);
                 return Err(ExcType::type_error(format!(
                     "type '{type_name}' is not an acceptable base type"
                 )));

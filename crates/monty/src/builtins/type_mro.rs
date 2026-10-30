@@ -9,7 +9,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
-    types::{List, Type, class::class_mro_values},
+    types::{BuiltinType, List, Type, class::class_mro_values},
     value::Value,
 };
 
@@ -35,7 +35,7 @@ pub fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 let name: &'static str = (*e).into();
                 name.rsplit_once('.').map_or(name, |(_, b)| b).to_owned()
             }
-            Value::Builtin(Builtins::Type(t)) => t.dunder_name(vm.heap, vm.interns).into_owned(),
+            Value::Builtin(Builtins::Type(t)) => Type::from(*t).dunder_name(vm.heap, vm.interns).into_owned(),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => "type".to_owned(),
             _ => cls_val.py_type_name(vm).into_owned(),
         };
@@ -47,7 +47,7 @@ pub fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
             let items = vec![
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
-                Value::Builtin(Builtins::Type(Type::Object)),
+                Value::Builtin(Builtins::Type(BuiltinType::Object)),
             ];
             let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
             Ok(Value::Ref(list_id))
@@ -60,30 +60,30 @@ pub fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             Ok(Value::Ref(list_id))
         }
         Value::Builtin(Builtins::Type(t)) => {
-            let items = if *t == Type::Object {
-                vec![Value::Builtin(Builtins::Type(Type::Object))]
-            } else if *t == Type::Bool {
+            let items = if *t == BuiltinType::Object {
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Object))]
+            } else if *t == BuiltinType::Bool {
                 vec![
-                    Value::Builtin(Builtins::Type(Type::Bool)),
-                    Value::Builtin(Builtins::Type(Type::Int)),
-                    Value::Builtin(Builtins::Type(Type::Object)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Bool)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Int)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
-            } else if *t == Type::DateTime {
+            } else if *t == BuiltinType::DateTime {
                 vec![
-                    Value::Builtin(Builtins::Type(Type::DateTime)),
-                    Value::Builtin(Builtins::Type(Type::Date)),
-                    Value::Builtin(Builtins::Type(Type::Object)),
+                    Value::Builtin(Builtins::Type(BuiltinType::DateTime)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Date)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
-            } else if matches!(*t, Type::DefaultDict | Type::Counter) {
+            } else if matches!(*t, BuiltinType::DefaultDict | BuiltinType::Counter) {
                 vec![
                     Value::Builtin(Builtins::Type(*t)),
-                    Value::Builtin(Builtins::Type(Type::Dict)),
-                    Value::Builtin(Builtins::Type(Type::Object)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
             } else {
                 vec![
                     Value::Builtin(Builtins::Type(*t)),
-                    Value::Builtin(Builtins::Type(Type::Object)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
             };
             let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
@@ -95,7 +95,7 @@ pub fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 .into_iter()
                 .map(|b| Value::Builtin(Builtins::ExcType(b)))
                 .collect();
-            items.push(Value::Builtin(Builtins::Type(Type::Object)));
+            items.push(Value::Builtin(Builtins::Type(BuiltinType::Object)));
             let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
             Ok(Value::Ref(list_id))
         }

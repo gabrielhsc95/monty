@@ -532,7 +532,7 @@ class MontyCrashedError(MontyError):
 
     @property
     def timed_out(self) -> bool:
-        """`True` when the pool's `request_timeout` watchdog killed the worker."""
+        """`True` when a parent-side elapsed-time or CPU watchdog killed the worker."""
 
     @property
     def exit_status(self) -> int | None:
@@ -603,6 +603,7 @@ class Monty:
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
+        execution_clock: Literal['wall', 'cpu'] = 'wall',
         max_checkouts_per_worker: int | None = None,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
@@ -615,7 +616,9 @@ class Monty:
                 resolved from the `MONTY_BIN` environment variable, the
                 environment's scripts directory (where the `pydantic-monty-runtime`
                 dependency installs it), or `PATH`.
-            min_processes: Workers spawned eagerly and kept warm.
+            min_processes: Workers spawned eagerly, and a floor on live workers:
+                while the pool is open, background refills restore it after a
+                worker is recycled, crashes or is discarded.
             max_processes: Cap on live workers (defaults to the CPU count);
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
@@ -624,11 +627,14 @@ class Monty:
                 that exceeds it is killed and the call raises `MontyCrashedError`
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
+            execution_clock: Clock for all sessions in this pool. Defaults to wall time.
+                CPU mode is Linux-only and requires a finite `request_timeout`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
-            feed_duration_limit_grace: Seconds the parent waits past a feed's
-                `max_feed_duration_secs` before killing the worker, giving the
-                sandbox time to raise `TimeoutError` itself rather than the
-                session dying with its worker. `None` disables this backstop.
+                `1` runs every session in a fresh process.
+            feed_duration_limit_grace: Seconds beyond `max_feed_duration_secs` on
+                the selected clock (`None` disables). CPU mode uses an independent OS counter.
+                This lets the sandbox raise `TimeoutError` before the worker is killed.
+                Resuming does not renew feed grace. `request_timeout` remains independent.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
         """
 
@@ -694,7 +700,10 @@ class Monty:
                 `ExternalModule` or a zero-argument factory returning one, called
                 once per session when first needed. The mapping is read live and
                 each entry validated when first imported, so modules may be
-                added later.
+                added later. Non-bundled names the mapping lacks read the package
+                `<cwd>/name/__init__.py`, else `<cwd>/name.py`, through the `os`
+                handler and then the mounts, and run the file as sandbox code,
+                raising `ModuleNotFoundError` when neither exists.
         """
 
 @final
@@ -851,9 +860,9 @@ class MontySession:
         snapshots. Invalid snapshots have no correctness or availability guarantees.
         Successful loading does not establish validity.
 
-        The dump restores its own `script_name` /
-        limits / type-check state (the `checkout()` config for those is not
-        applied). The class-instance store starts empty — it is host state and
+        The dump restores its `script_name` and type-check state.
+        Checkout limits cap the restored limits. The execution clock must match.
+        The class-instance store starts empty — it is host state and
         never part of a dump, so restored `ClassInstance` values fall back to
         `MontyClassProxy` stand-ins and method calls on them fail. Raises if
         the dump is actually a suspended snapshot.
@@ -876,9 +885,9 @@ class MontySession:
         The snapshot trust requirements of `load_session` also apply here.
 
         Valid only on a fresh session, before any feed or load; raises
-        `RuntimeError` otherwise. The dump restores its own `script_name` /
-        limits / type-check state (the `checkout()` config for those is not
-        applied). The class-instance store starts empty — it is host state and
+        `RuntimeError` otherwise. The dump restores its `script_name` and type-check state.
+        Checkout limits cap the restored limits. The execution clock must match.
+        The class-instance store starts empty — it is host state and
         never part of a dump, so restored `ClassInstance` values fall back to
         `MontyClassProxy` stand-ins and method calls on them fail. Raises if
         the dump is actually an idle session.
@@ -955,6 +964,7 @@ class AsyncMonty:
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
+        execution_clock: Literal['wall', 'cpu'] = 'wall',
         max_checkouts_per_worker: int | None = None,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
@@ -1037,6 +1047,7 @@ class AsyncMontyWebsocket:
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
         auto_resume: bool = True,
+        max_decode_bytes: int | None = None,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -1055,12 +1066,19 @@ class AsyncMontyWebsocket:
                 worker that exceeds it has its connection killed and the call
                 raises `MontyCrashedError` with `timed_out=True`. This also
                 bounds the wait when a relay accepts the connection but never
-                produces a worker. Pass `None` to wait indefinitely.
+                produces a worker. CPU-mode servers require a finite value.
+                Pass `None` to wait indefinitely with wall-mode servers.
+                Under contention, this wall deadline can expire before a server
+                CPU budget. Choose it for the expected budgets and scheduling delays.
 
                 Note that `install_dependencies` is a turn too, so the default
                 10.0 is often too low for it — a real `uv pip install` can exceed
-                it. Raise `request_timeout` (or pass `None`) when installing
-                dependencies over the WebSocket transport.
+                it. Raise `request_timeout` when installing dependencies over
+                the WebSocket transport.
+            max_decode_bytes: Per-frame host allocation budget in bytes. `None`
+                keeps the protocol's 1 GiB ceiling. Values above 1 GiB are rejected
+                at construction. Excludes wire buffers and Python conversion.
+                Exhaustion ends the session with a protocol error without replay.
             connect_headers: Called once per session, as it is entered and before
                 any wait for pool capacity, to produce extra `str` to `str`
                 headers for that connection's WebSocket upgrade request — e.g. a
@@ -1071,10 +1089,10 @@ class AsyncMontyWebsocket:
                 `user-agent` and the `traceparent` the Logfire integration
                 adds, and a malformed name or value raises `RuntimeError` as
                 the session is entered.
-            feed_duration_limit_grace: Seconds the parent waits past a feed's
-                `max_feed_duration_secs` before killing the worker, giving the
-                sandbox time to raise `TimeoutError` itself rather than the
-                session dying with its worker. `None` disables this backstop.
+            feed_duration_limit_grace: Client wall-time grace beyond
+                `max_feed_duration_secs` when the server uses wall time.
+                CPU mode uses the server's supervisor and grace instead.
+                `None` disables this client backstop. `request_timeout` stays independent.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
             auto_resume: When a server that stores sessions drains one, redial,
                 load the state it named into a new session and re-send the

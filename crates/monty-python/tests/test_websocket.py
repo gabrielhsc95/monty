@@ -516,3 +516,35 @@ async def test_module_stubs_over_websocket(ws_url: str):
     async with AsyncMontyWebsocket(ws_url) as pool:
         async with pool.checkout(type_check=True, external_modules=modules) as session:
             assert await session.feed_run('import tools\ntools.add(1, 2)') == snapshot(3)
+
+
+async def test_host_decode_budget_rejects_large_results(ws_url: str):
+    async with AsyncMontyWebsocket(ws_url, max_decode_bytes=4096) as pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run('6 * 7') == snapshot(42)
+            with pytest.raises(RuntimeError, match='frame exceeds decode memory budget'):
+                await session.feed_run('[0] * 100_000')
+        async with pool.checkout() as session:
+            assert await session.feed_run('6 * 7') == snapshot(42)
+
+
+def test_decode_budget_preserves_timeout_validation():
+    with pytest.raises(ValueError, match='invalid request_timeout:'):
+        AsyncMontyWebsocket('ws://127.0.0.1:1', max_decode_bytes=4096, request_timeout=-1.0)
+
+
+@pytest.mark.parametrize('max_decode_bytes', [None, 0, 1, (1 << 30) - 1, 1 << 30])
+def test_decode_budget_accepts_values_within_ceiling(max_decode_bytes: int | None):
+    AsyncMontyWebsocket('ws://127.0.0.1:1', max_decode_bytes=max_decode_bytes)
+
+
+@pytest.mark.parametrize('max_decode_bytes', [(1 << 30) + 1, sys.maxsize])
+def test_decode_budget_rejects_values_above_ceiling(max_decode_bytes: int):
+    with pytest.raises(ValueError, match=r'^max_decode_bytes must be at most 1073741824 bytes \(1 GiB\)$'):
+        AsyncMontyWebsocket('ws://127.0.0.1:1', max_decode_bytes=max_decode_bytes)
+
+
+@pytest.mark.parametrize('max_decode_bytes', [-1, 1 << 128])
+def test_decode_budget_rejects_values_outside_usize(max_decode_bytes: int):
+    with pytest.raises(OverflowError):
+        AsyncMontyWebsocket('ws://127.0.0.1:1', max_decode_bytes=max_decode_bytes)

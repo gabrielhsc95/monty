@@ -65,7 +65,7 @@ pub(crate) fn issubclass_check(cls: &Value, classinfo: &Value, vm: &mut VM<'_>) 
     validate_is_class(cls, vm)?;
 
     match classinfo {
-        Value::Builtin(Builtins::Type(t)) => Ok(class_is_subclass_of_type(cls, *t, vm)),
+        Value::Builtin(Builtins::Type(t)) => Ok(class_is_subclass_of_type(cls, (*t).into(), vm)),
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
             Ok(class_is_subclass_of_type(cls, Type::Type, vm))
         }
@@ -105,10 +105,11 @@ fn class_is_subclass_of_type(cls: &Value, target: Type, vm: &VM<'_>) -> bool {
     }
     match cls {
         Value::Builtin(Builtins::Type(t)) => {
-            if *t == target || (*t == Type::Bool && target == Type::Int) {
+            let t_type: Type = (*t).into();
+            if t_type == target || (t_type == Type::Bool && target == Type::Int) {
                 true
             } else {
-                t.is_instance_of(target)
+                t_type.is_instance_of(target)
             }
         }
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => target == Type::Type,

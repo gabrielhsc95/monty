@@ -100,7 +100,7 @@ pub fn builtin_exception_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
                     1 => {
                         let arg = pos.next().expect("length checked");
                         defer_drop!(arg, vm);
-                        let msg = arg.to_str(vm)?.to_owned();
+                        let msg = arg.try_to_str(vm)?.to_owned();
                         if let HeapReadOutput::Exception(exc) = vm.heap.read(*id) {
                             exc.get_mut(vm.heap).set_arg(Some(msg));
                         }

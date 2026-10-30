@@ -3,7 +3,7 @@ use std::fmt::Write;
 use monty_types::MontyUuid;
 
 use super::{
-    Dict, LazyHeapSet, PyTrait, Type, attribute_name_value,
+    BuiltinType, Dict, LazyHeapSet, PyTrait, Type,
     instance::{BoundMethod, is_method_value},
     tuple::allocate_tuple,
 };
@@ -241,12 +241,12 @@ pub(crate) fn class_bases_values(all_bases: &[ClassBase], heap: &mut Heap) -> Ve
                 items.push(Value::Builtin(Builtins::ExcType(exc)));
             }
             ClassBase::Object => {
-                items.push(Value::Builtin(Builtins::Type(Type::Object)));
+                items.push(Value::Builtin(Builtins::Type(BuiltinType::Object)));
             }
         }
     }
     if items.is_empty() {
-        items.push(Value::Builtin(Builtins::Type(Type::Object)));
+        items.push(Value::Builtin(Builtins::Type(BuiltinType::Object)));
     }
     items
 }
@@ -265,15 +265,15 @@ pub(crate) fn class_mro_values(class_id: HeapId, mro: &[ClassBase], heap: &mut H
                 items.push(Value::Builtin(Builtins::ExcType(exc)));
             }
             ClassBase::Object => {
-                items.push(Value::Builtin(Builtins::Type(Type::Object)));
+                items.push(Value::Builtin(Builtins::Type(BuiltinType::Object)));
             }
         }
     }
     if !items
         .iter()
-        .any(|v| matches!(v, Value::Builtin(Builtins::Type(Type::Object))))
+        .any(|v| matches!(v, Value::Builtin(Builtins::Type(BuiltinType::Object))))
     {
-        items.push(Value::Builtin(Builtins::Type(Type::Object)));
+        items.push(Value::Builtin(Builtins::Type(BuiltinType::Object)));
     }
     items
 }
@@ -330,7 +330,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx());
+        let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -394,7 +394,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             }
             let dict_id = vm.heap.allocate(HeapData::Dict(Dict::new()));
             let mut dict_guard = DropGuard::new(Value::Ref(dict_id), vm);
-            let key = attribute_name_value(attr, dict_guard.ctx());
+            let key = attr.as_value(dict_guard.ctx().heap);
             dict_guard.ctx().heap.inc_ref(dict_id);
             let stored = Value::Ref(dict_id);
             let old = self.namespace_mut().set(key, stored, dict_guard.ctx())?;
