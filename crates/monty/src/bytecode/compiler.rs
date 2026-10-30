@@ -29,7 +29,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{CompileInterns, StringId},
+    intern::{CompileInterns, StaticStrings, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
@@ -1066,8 +1066,21 @@ impl<'a, 'i> Compiler<'a, 'i> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
+        debug_assert!(
+            body.cell_var_slots.len() <= 1,
+            "class body owns at most the implicit __class__ cell"
+        );
+        let class_cell_slot = body.cell_var_slots.first().copied();
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
-            Self::compile_class_body(&body.body, members, position, interns, namespace_size, flags)
+            Self::compile_class_body(
+                &body.body,
+                members,
+                class_cell_slot,
+                position,
+                interns,
+                namespace_size,
+                flags,
+            )
         })
     }
 
@@ -1117,6 +1130,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
+        class_cell_slot: Option<NamespaceId>,
         position: CodeRange,
         interns: &mut CompileInterns<'_>,
         num_locals: u16,
@@ -1135,7 +1149,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
             compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
             compiler.compile_name(member)?;
         }
-        let member_count = check_collection_size_u16(members.len(), position)?;
+        if let Some(cell_slot) = class_cell_slot {
+            let classcell_id = compiler.interns.intern_static(StaticStrings::DunderClasscell);
+            let name_const = compiler.code.add_const(Value::InternString(classcell_id))?;
+            compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
+            compiler.code.emit_load_local(cell_slot.as_u16())?;
+        }
+        let dict_len = members.len() + usize::from(class_cell_slot.is_some());
+        let member_count = check_collection_size_u16(dict_len, position)?;
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 

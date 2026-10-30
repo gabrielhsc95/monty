@@ -26,7 +26,7 @@ use crate::{
         HeapReader, heap_read_ref_as_field_mut,
     },
     heap_data::HeapData,
-    intern::{FunctionId, Interns, StringId},
+    intern::{Interns, StringId},
     types::{Union, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -63,8 +63,6 @@ pub(crate) struct Class {
     all_bases: Vec<ClassBase>,
     #[serde(default)]
     mro: Vec<ClassBase>,
-    #[serde(default)]
-    defined_methods: Vec<FunctionId>,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
@@ -98,11 +96,6 @@ impl Class {
     /// Returns the method resolution order (base classes in C3 linearization order).
     pub(crate) fn mro(&self) -> &[ClassBase] {
         &self.mro
-    }
-
-    /// Returns the method IDs defined directly in this class body.
-    pub(crate) fn defined_methods(&self) -> &[FunctionId] {
-        &self.defined_methods
     }
 
     /// Whether this class inherits from `target`.
@@ -149,7 +142,6 @@ impl Class {
         bases: Vec<HeapId>,
         all_bases: Vec<ClassBase>,
         mro: Vec<ClassBase>,
-        defined_methods: Vec<FunctionId>,
     ) -> Self {
         Self {
             name,
@@ -157,7 +149,6 @@ impl Class {
             bases,
             all_bases,
             mro,
-            defined_methods,
             uuid: None,
         }
     }
@@ -561,4 +552,49 @@ impl HeapItem for Class {
             stack.push(base_id);
         }
     }
+}
+
+/// Whether `lhs` and `rhs` are user instances where `rhs`'s class is a strict subclass of `lhs`'s.
+pub(crate) fn rhs_is_proper_subclass_instance(lhs: &Value, rhs: &Value, vm: &VM<'_>) -> bool {
+    let (Value::Ref(lhs_id), Value::Ref(rhs_id)) = (lhs, rhs) else {
+        return false;
+    };
+    let (HeapData::Instance(lhs_inst), HeapData::Instance(rhs_inst)) = (vm.heap.get(*lhs_id), vm.heap.get(*rhs_id))
+    else {
+        return false;
+    };
+    let lhs_cls_id = lhs_inst.class();
+    let rhs_cls_id = rhs_inst.class();
+    lhs_cls_id != rhs_cls_id
+        && matches!(vm.heap.get(rhs_cls_id), HeapData::Class(rhs_cls) if rhs_cls.is_subclass_of(lhs_cls_id))
+}
+
+/// Whether `rhs` is an instance of a strict subclass of `lhs`'s class whose MRO resolves `dunder`
+/// to a different descriptor than `lhs`'s MRO (`method_is_overloaded` in CPython).
+pub(crate) fn rhs_overrides_subclass_dunder(lhs: &Value, rhs: &Value, dunder: &str, vm: &VM<'_>) -> bool {
+    let (Value::Ref(lhs_id), Value::Ref(rhs_id)) = (lhs, rhs) else {
+        return false;
+    };
+    let (HeapData::Instance(lhs_inst), HeapData::Instance(rhs_inst)) = (vm.heap.get(*lhs_id), vm.heap.get(*rhs_id))
+    else {
+        return false;
+    };
+    let lhs_cls_id = lhs_inst.class();
+    let rhs_cls_id = rhs_inst.class();
+    if lhs_cls_id == rhs_cls_id {
+        return false;
+    }
+    let (HeapData::Class(lhs_cls), HeapData::Class(rhs_cls)) = (vm.heap.get(lhs_cls_id), vm.heap.get(rhs_cls_id))
+    else {
+        return false;
+    };
+    if !rhs_cls.is_subclass_of(lhs_cls_id) {
+        return false;
+    }
+    let Some(rhs_val) = rhs_cls.mro_getattr_ref(dunder, vm.heap, vm.interns) else {
+        return false;
+    };
+    lhs_cls
+        .mro_getattr_ref(dunder, vm.heap, vm.interns)
+        .is_none_or(|lhs_val| !lhs_val.is(rhs_val))
 }

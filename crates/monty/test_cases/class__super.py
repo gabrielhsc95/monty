@@ -242,3 +242,181 @@ sec = SuperExcCheck('boom')
 assert sec.args == ('boom', 'extra')
 sec2 = SuperExcCheck.allocate(SuperExcCheck)
 assert isinstance(sec2, SuperExcCheck) and sec2.args == ('allocated',)
+
+
+# --- Compiler __class__ cell, nested closures, and dynamic class factories ---
+class FactoryBase:
+    def val(self):
+        return 10
+
+
+def add_one(cls):
+    class Wrapped(cls):
+        def val(self):
+            return super().val() + 1
+
+        def via_lambda(self):
+            return (lambda s: super().val() + 100)(self)
+
+        def via_nested_def(self):
+            def inner(s):
+                return super().val() + 200
+
+            return inner(self)
+
+        def via_default_arg(self):
+            def inner(s=super()):
+                return s.val() + 300
+
+            return inner()
+
+        def read_class(self):
+            return (lambda: __class__)()
+
+    return Wrapped
+
+
+DoubleWrapped = add_one(add_one(FactoryBase))
+dw = DoubleWrapped()
+assert dw.val() == 12
+assert dw.via_lambda() == 111
+assert dw.via_nested_def() == 211
+assert dw.via_default_arg() == 311
+assert dw.read_class() is DoubleWrapped
+
+
+# Reassigning self = None before zero-arg super() produces an unbound super object,
+# both when `self` is a plain parameter and when `self` is captured by a closure.
+class SelfNoneCheck(FactoryBase):
+    def plain_none(self):
+        self = None
+        return super()
+
+    def captured_none(self):
+        keep = lambda: self
+        self = None
+        assert keep() is None
+        return super()
+
+
+sn_plain = SelfNoneCheck().plain_none()
+assert sn_plain.__thisclass__ is SelfNoneCheck and sn_plain.__self__ is None
+sn_cap = SelfNoneCheck().captured_none()
+assert sn_cap.__thisclass__ is SelfNoneCheck and sn_cap.__self__ is None
+
+
+# Free function attached outside class body has no __class__ cell.
+def detached_method(self):
+    return super().val()
+
+
+class DetachedSub(FactoryBase):
+    pass
+
+
+DetachedSub.m = detached_method
+try:
+    DetachedSub().m()
+    assert False, 'expected RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'super(): __class__ cell not found'
+
+
+# Zero-arg super() in *args-only method raises RuntimeError: super(): no arguments.
+class VarArgsOnly(FactoryBase):
+    def m(*args):
+        return super().val()
+
+
+try:
+    VarArgsOnly().m()
+    assert False, 'expected RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'super(): no arguments'
+
+
+# Non-type lexical __class__ captured from an enclosing function raises RuntimeError.
+def make_non_type_class_cell(bad_val):
+    __class__ = bad_val
+
+    def f(self):
+        return super()
+
+    return f
+
+
+for bad_val, expected_type in [(42, 'int'), (None, 'NoneType'), (FactoryBase(), 'FactoryBase')]:
+    try:
+        make_non_type_class_cell(bad_val)(1)
+        assert False, 'expected RuntimeError'
+    except RuntimeError as e:
+        assert str(e) == f'super(): __class__ is not a type ({expected_type})'
+
+
+# __class__ cell is populated before __init_subclass__ runs, and __classcell__ is
+# validated and stripped from the resulting class namespace.
+init_sub_seen = []
+
+
+class InitSubHookBase:
+    def __init_subclass__(cls):
+        inst = cls()
+        init_sub_seen.append((inst.my_cls() is cls, inst.sup().__thisclass__ is cls))
+
+
+class InitSubHookChild(InitSubHookBase):
+    def my_cls(self):
+        return __class__
+
+    def sup(self):
+        return super()
+
+
+assert init_sub_seen == [(True, True)]
+
+try:
+    type('BadCellInt', (), {'__classcell__': 42})
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "__classcell__ must be a nonlocal cell, not <class 'int'>"
+
+try:
+    type('BadCellInst', (), {'__classcell__': FactoryBase()})
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "__classcell__ must be a nonlocal cell, not <class 'FactoryBase'>"
+
+
+# locals() visibility and nested classes / custom __class__ class attribute.
+class LocalsAndCustomAttr:
+    in_body = '__class__' in locals()
+    __class__ = 'custom_attr'
+
+    def no_super(self):
+        return '__class__' in locals()
+
+    def with_super(self):
+        _ = super
+        return '__class__' in locals()
+
+    def get_cls(self):
+        return __class__
+
+    def make_inner(self):
+        class Inner:
+            outer_cls = __class__
+
+            def inner_cls(self):
+                return __class__
+
+        return Inner
+
+
+assert not LocalsAndCustomAttr.in_body
+lca = LocalsAndCustomAttr()
+assert not lca.no_super()
+assert lca.with_super()
+assert lca.get_cls() is LocalsAndCustomAttr
+InnerCls = lca.make_inner()
+assert InnerCls.outer_cls is LocalsAndCustomAttr
+assert InnerCls().inner_cls() is InnerCls

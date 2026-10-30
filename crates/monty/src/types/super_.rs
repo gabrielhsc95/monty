@@ -22,7 +22,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::FunctionId,
+    namespace::NamespaceId,
     value::{EitherStr, Value},
 };
 
@@ -95,99 +95,89 @@ pub fn builtin_super(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 fn zero_arg_super(vm: &mut VM<'_>) -> RunResult<Value> {
-    let (locals_count, base, func_id) = {
+    let (base, func_id) = {
         let frame = vm.current_frame();
-        (frame.locals_count(), frame.stack_base(), frame.function_id())
+        (frame.stack_base(), frame.function_id())
     };
-    if locals_count == 0 {
+    let Some(func_id) = func_id else {
+        return Err(ExcType::runtime_error("super(): no arguments"));
+    };
+    let (has_pos_param, self_cell_slot, class_cell_slot) = {
+        let func = vm.interns.get_function(func_id);
+        let has_pos_param = func.signature.has_positional_param();
+        let self_cell_slot = func
+            .cell_param_indices
+            .iter()
+            .position(|&p| p == Some(0))
+            .map(|idx| func.cell_var_slots[idx].index());
+        let class_cell_slot = func
+            .free_var_slots
+            .iter()
+            .copied()
+            .find(|slot| {
+                func.code
+                    .local_name(slot.as_u16())
+                    .is_some_and(|id| vm.interns.get_str(id) == "__class__")
+            })
+            .map(NamespaceId::index);
+        (has_pos_param, self_cell_slot, class_cell_slot)
+    };
+    if !has_pos_param {
         return Err(ExcType::runtime_error("super(): no arguments"));
     }
-    let self_val = vm.stack[base].clone_with_heap(vm.heap);
+
+    let self_val = if let Some(slot) = self_cell_slot {
+        let Value::Ref(cell_id) = vm.stack[base + slot] else {
+            unreachable!("captured parameter slot must hold a Cell reference");
+        };
+        let HeapData::Cell(cell) = vm.heap.get(cell_id) else {
+            unreachable!("captured parameter slot must point to a Cell");
+        };
+        cell.0.clone_with_heap(vm.heap)
+    } else {
+        vm.stack[base].clone_with_heap(vm.heap)
+    };
     if matches!(self_val, Value::Undefined) {
-        return Err(ExcType::runtime_error("super(): no arguments"));
+        return Err(ExcType::runtime_error("super(): arg[0] deleted"));
     }
     defer_drop!(self_val, vm);
 
-    let mut class_val = None;
-    for slot in 0..locals_count {
-        let name_match = vm
-            .current_frame()
-            .code()
-            .local_name(slot)
-            .is_some_and(|name_id| vm.interns.get_str(name_id) == "__class__");
-        if name_match
-            && let Value::Ref(cell_id) = vm.stack[base + usize::from(slot)]
-            && let HeapData::Cell(cell) = vm.heap.get(cell_id)
-        {
-            let val = cell.0.clone_with_heap(vm.heap);
-            if !matches!(val, Value::Undefined) {
-                class_val = Some(val);
-                break;
-            }
-        }
-    }
-
-    if class_val.is_none()
-        && let Some(fid) = func_id
-    {
-        class_val = find_defining_class(fid, self_val, vm);
-    }
-
-    let Some(class_val) = class_val else {
+    let Some(class_slot) = class_cell_slot else {
         return Err(ExcType::runtime_error("super(): __class__ cell not found"));
     };
+    let class_val = {
+        let Value::Ref(cell_id) = vm.stack[base + class_slot] else {
+            unreachable!("__class__ free-var slot must hold a Cell reference");
+        };
+        let HeapData::Cell(cell) = vm.heap.get(cell_id) else {
+            unreachable!("__class__ free-var slot must point to a Cell");
+        };
+        cell.0.clone_with_heap(vm.heap)
+    };
+    if matches!(class_val, Value::Undefined) {
+        return Err(ExcType::runtime_error("super(): empty __class__ cell"));
+    }
     defer_drop!(class_val, vm);
 
-    validate_super_type(class_val, vm)?;
+    if !is_type_value(class_val, vm) {
+        let got = class_val.py_type_name(vm);
+        return Err(ExcType::runtime_error(format!(
+            "super(): __class__ is not a type ({got})"
+        )));
+    }
+
+    if matches!(self_val, Value::None) {
+        let type_arg = class_val.clone_with_heap(vm.heap);
+        let s = Super::new(type_arg, None);
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::Super(s))));
+    }
+
     validate_super_obj(class_val, self_val, vm)?;
 
     let type_arg = class_val.clone_with_heap(vm.heap);
     let obj_arg = self_val.clone_with_heap(vm.heap);
     let s = Super::new(type_arg, Some(obj_arg));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Super(s))))
-}
-
-fn find_defining_class(func_id: FunctionId, self_val: &Value, vm: &VM<'_>) -> Option<Value> {
-    let start_class_id = match self_val {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Instance(inst) => Some(inst.class()),
-            HeapData::Class(_) => Some(*id),
-            _ => None,
-        },
-        _ => None,
-    };
-
-    if let Some(start_class_id) = start_class_id
-        && let HeapData::Class(start_class) = vm.heap.get(start_class_id)
-    {
-        if start_class.defined_methods().contains(&func_id) {
-            vm.heap.inc_ref(start_class_id);
-            return Some(Value::Ref(start_class_id));
-        }
-
-        for base in start_class.mro() {
-            if let ClassBase::Class(cls_id) = base
-                && let HeapData::Class(cls) = vm.heap.get(*cls_id)
-                && cls.defined_methods().contains(&func_id)
-            {
-                vm.heap.inc_ref(*cls_id);
-                return Some(Value::Ref(*cls_id));
-            }
-        }
-    }
-
-    // Fallback: search classes in globals if self was reassigned
-    for val in &vm.globals {
-        if let Value::Ref(cls_id) = val
-            && let HeapData::Class(cls) = vm.heap.get(*cls_id)
-            && cls.defined_methods().contains(&func_id)
-        {
-            vm.heap.inc_ref(*cls_id);
-            return Some(Value::Ref(*cls_id));
-        }
-    }
-
-    None
 }
 
 fn is_type_value(val: &Value, vm: &VM<'_>) -> bool {

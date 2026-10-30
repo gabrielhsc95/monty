@@ -8,7 +8,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, Heap, HeapData, HeapId},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     types::{Class, Dict, PyTrait, Type, class::ClassBase},
     value::Value,
@@ -255,49 +255,29 @@ fn create_class(
         }
     }
 
-    let mut inherited_methods = ahash::AHashSet::new();
-    let mut method_idx = 0;
-    for base in &mro {
-        if let ClassBase::Class(ancestor_id) = base
-            && let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
-        {
-            for &fid in ancestor_cls.defined_methods() {
-                vm.heap.tracker.check_time_every(method_idx)?;
-                method_idx += 1;
-                inherited_methods.insert(fid);
-            }
+    let classcell_id = match source.get_by_str("__classcell__", vm.heap, vm.interns) {
+        Some(Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::Cell(_)) => Some(*id),
+        Some(bad) => {
+            let bad_type = bad.py_type_name_heap(vm.heap, vm.interns);
+            return Err(ExcType::type_error(format!(
+                "__classcell__ must be a nonlocal cell, not <class '{bad_type}'>"
+            )));
         }
-    }
-
-    let mut defined_methods = Vec::new();
-    let mut seen_methods = ahash::AHashSet::new();
-    for (i, (_, val)) in source.iter().enumerate() {
-        vm.heap.tracker.check_time_every(i)?;
-        let fid = match val {
-            Value::DefFunction(fid) => Some(*fid),
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Closure(c) => Some(c.func_id),
-                HeapData::FunctionDefaults(d) => Some(d.func_id),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(fid) = fid
-            && !inherited_methods.contains(&fid)
-            && seen_methods.insert(fid)
-        {
-            defined_methods.push(fid);
-        }
-    }
+        None => None,
+    };
 
     // Copy the namespace (CPython semantics: the class owns an independent
-    // dict). Check the deadline once beforehand so that building the cloned
-    // pairs cannot exit early and leak cloned heap references.
+    // dict), stripping `__classcell__`. Check the deadline once beforehand so
+    // that building the cloned pairs cannot exit early and leak heap refs.
     vm.heap.tracker.check_time()?;
     let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(source.len() + 2);
     pairs.extend(
         source
             .iter()
+            .filter(|(k, _)| {
+                k.as_either_str(vm.heap)
+                    .is_none_or(|s| s.as_str(vm.interns) != "__classcell__")
+            })
             .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap))),
     );
     if source.get_by_str("__doc__", vm.heap, vm.interns).is_none() {
@@ -334,8 +314,17 @@ fn create_class(
         bases_ids,
         bases,
         mro.clone(),
-        defined_methods,
     ))));
+
+    if let Some(cell_id) = classcell_id {
+        vm.heap.inc_ref(class_id);
+        let cell_val = Value::Ref(class_id);
+        defer_drop_mut!(cell_val, vm);
+        let HeapReadOutput::Cell(cell) = vm.heap.read(cell_id) else {
+            unreachable!("__classcell__ validated as Cell above");
+        };
+        mem::swap(&mut cell.get_mut(vm.heap).0, cell_val);
+    }
 
     // Look for __init_subclass__ in base classes' MRO
     let mut init_subclass = None;

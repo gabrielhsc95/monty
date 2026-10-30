@@ -1521,8 +1521,22 @@ class MethodSpoof:
         __class__ = 42
         return super()
 
-s = MethodSpoof().f()
-assert s.__thisclass__ is MethodSpoof
+try:
+    MethodSpoof().f()
+    assert False, 'expected RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'super(): __class__ cell not found'
+
+def make_outer_spoof():
+    __class__ = 42
+    class OuterSpoof:
+        def f(self):
+            return super()
+    return OuterSpoof
+
+OuterSpoof = make_outer_spoof()
+s = OuterSpoof().f()
+assert s.__thisclass__ is OuterSpoof
 ");
 }
 
@@ -2186,15 +2200,24 @@ def f(self):
     return 1
 
 def g(self):
-    return super().m1() + 2
+    return super(Child, self).m1() + 2
+
+def free_zero_super(self):
+    return super().m1()
 
 # Base has same function bound to multiple names
 Base = type('Base', (), {'m1': f, 'm2': f, 'm3': f})
-Child = type('Child', (Base,), {'m1': g, 'm2': g})
+Child = type('Child', (Base,), {'m1': g, 'm2': g, 'bad': free_zero_super})
 
 c = Child()
 assert c.m1() == 3
 assert c.m2() == 3
+
+try:
+    c.bad()
+    assert False, 'expected RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'super(): __class__ cell not found'
 ");
 
     let code = r"
@@ -2651,4 +2674,51 @@ except TypeError as e:
 else:
     assert False, 'expected TypeError'
 ");
+}
+
+#[test]
+fn super_class_cell_and_subclass_ops_survive_dump_restore() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r"
+class Base:
+    def val(self):
+        return 10
+    def __add__(self, other):
+        return 'base_add'
+    def __eq__(self, other):
+        return 'base_eq'
+
+def add_one(cls):
+    class Wrapped(cls):
+        def val(self):
+            return (lambda s: super().val() + 1)(self)
+        def cls_obj(self):
+            return (lambda: __class__)()
+    return Wrapped
+
+C = add_one(add_one(Base))
+
+class Sub(Base):
+    def __radd__(self, other):
+        return 'sub_radd'
+    def __eq__(self, other):
+        return 'sub_eq'
+",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle session");
+    };
+    let output = restored
+        .feed_run(
+            "assert C().cls_obj() is C\nassert Base() + Sub() == 'sub_radd'\nassert (Base() == Sub()) == 'sub_eq'\nC().val()",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(output, MontyObject::int(12));
 }

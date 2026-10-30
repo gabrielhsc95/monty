@@ -993,6 +993,12 @@ pub enum StaticStrings {
     /// `__args__` of a `types.GenericAlias`.
     #[strum(serialize = "__args__")]
     DunderArgs,
+    /// `__class__` — implicit closure cell synthesized in class bodies for methods using `super()` or `__class__`.
+    #[strum(serialize = "__class__")]
+    DunderClass,
+    /// `__classcell__` — class-namespace entry carrying the implicit `__class__` cell to `type.__new__`.
+    #[strum(serialize = "__classcell__")]
+    DunderClasscell,
     /// `__delattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__delattr__")]
     DunderDelattr,

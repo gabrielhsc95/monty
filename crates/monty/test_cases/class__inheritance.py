@@ -1197,4 +1197,236 @@ try:
 except TypeError as exc:
     assert str(exc) == 'cannot inherit frozen dataclass from a non-frozen one'
 
+
+# --- Subclass reflected binary operator and rich equality precedence ---
+class OpBase:
+    def __add__(self, o):
+        return 'base.add'
+
+    def __sub__(self, o):
+        return 'base.sub'
+
+    def __mul__(self, o):
+        return 'base.mul'
+
+    def __matmul__(self, o):
+        return 'base.matmul'
+
+    def __truediv__(self, o):
+        return 'base.truediv'
+
+    def __floordiv__(self, o):
+        return 'base.floordiv'
+
+    def __mod__(self, o):
+        return 'base.mod'
+
+    def __divmod__(self, o):
+        return 'base.divmod'
+
+    def __pow__(self, o, m=None):
+        return ('base.pow', m)
+
+    def __and__(self, o):
+        return 'base.and'
+
+    def __or__(self, o):
+        return 'base.or'
+
+    def __xor__(self, o):
+        return 'base.xor'
+
+    def __lshift__(self, o):
+        return 'base.lshift'
+
+    def __rshift__(self, o):
+        return 'base.rshift'
+
+
+class OpSub(OpBase):
+    def __radd__(self, o):
+        return 'sub.radd'
+
+    def __rsub__(self, o):
+        return 'sub.rsub'
+
+    def __rmul__(self, o):
+        return 'sub.rmul'
+
+    def __rmatmul__(self, o):
+        return 'sub.rmatmul'
+
+    def __rtruediv__(self, o):
+        return 'sub.rtruediv'
+
+    def __rfloordiv__(self, o):
+        return 'sub.rfloordiv'
+
+    def __rmod__(self, o):
+        return 'sub.rmod'
+
+    def __rdivmod__(self, o):
+        return 'sub.rdivmod'
+
+    def __rpow__(self, o, m=None):
+        return ('sub.rpow', m)
+
+    def __rand__(self, o):
+        return 'sub.rand'
+
+    def __ror__(self, o):
+        return 'sub.ror'
+
+    def __rxor__(self, o):
+        return 'sub.rxor'
+
+    def __rlshift__(self, o):
+        return 'sub.rlshift'
+
+    def __rrshift__(self, o):
+        return 'sub.rrshift'
+
+
+class OpInherited(OpBase):
+    pass
+
+
+ob = OpBase()
+os_inst = OpSub()
+oi = OpInherited()
+assert ob + os_inst == 'sub.radd'
+assert ob - os_inst == 'sub.rsub'
+assert ob * os_inst == 'sub.rmul'
+assert ob @ os_inst == 'sub.rmatmul'
+assert ob / os_inst == 'sub.rtruediv'
+assert ob // os_inst == 'sub.rfloordiv'
+assert ob % os_inst == 'sub.rmod'
+assert divmod(ob, os_inst) == 'sub.rdivmod'
+assert ob**os_inst == ('sub.rpow', None)
+assert pow(ob, os_inst, 7) == ('sub.rpow', 7)
+assert (ob & os_inst) == 'sub.rand'
+assert (ob | os_inst) == 'sub.ror'
+assert (ob ^ os_inst) == 'sub.rxor'
+assert (ob << os_inst) == 'sub.rlshift'
+assert (ob >> os_inst) == 'sub.rrshift'
+
+# Same-class and unoverridden subclass fall back to Base direct dunder first.
+assert os_inst + os_inst == 'base.add'
+assert ob + oi == 'base.add'
+
+# Inherited or identical __radd__ does NOT preempt Base.__add__, unless Base.__add__ declines.
+radd_log = []
+
+
+class RaddBase:
+    def __add__(self, o):
+        radd_log.append(('add', type(self).__name__))
+        return 'base.add'
+
+    def __radd__(self, o):
+        radd_log.append(('radd', type(self).__name__))
+        return 'base.radd'
+
+
+class RaddSubInherited(RaddBase):
+    pass
+
+
+assert RaddBase() + RaddSubInherited() == 'base.add'
+assert radd_log == [('add', 'RaddBase')]
+
+radd_decline_log = []
+
+
+class RaddDeclineBase:
+    def __add__(self, o):
+        radd_decline_log.append(('add', type(self).__name__))
+        return NotImplemented
+
+    def __radd__(self, o):
+        radd_decline_log.append(('radd', type(self).__name__))
+        return 'fallback.radd'
+
+
+class RaddDeclineSub(RaddDeclineBase):
+    pass
+
+
+assert RaddDeclineBase() + RaddDeclineSub() == 'fallback.radd'
+assert radd_decline_log == [('add', 'RaddDeclineBase'), ('radd', 'RaddDeclineSub')]
+
+# Sub overriding __radd__ and returning NotImplemented falls back to Base.__add__ once.
+sub_decline_log = []
+
+
+class SubDecline(OpBase):
+    def __radd__(self, o):
+        sub_decline_log.append('sub.radd')
+        return NotImplemented
+
+
+assert OpBase() + SubDecline() == 'base.add'
+assert sub_decline_log == ['sub.radd']
+
+
+# Shared function object on both classes is not considered overloaded.
+def shared_radd(self, o):
+    return 'shared.radd'
+
+
+class SharedBase:
+    def __add__(self, o):
+        return 'shared.add'
+
+    __radd__ = shared_radd
+
+
+class SharedSub(SharedBase):
+    __radd__ = shared_radd
+
+
+assert SharedBase() + SharedSub() == 'shared.add'
+
+
+# Overriding __radd__ with None preempts Base.__add__ and raises TypeError.
+class NoneRaddSub(RaddBase):
+    __radd__ = None
+
+
+try:
+    RaddBase() + NoneRaddSub()
+    assert False, 'expected TypeError calling None __radd__'
+except TypeError as exc:
+    assert str(exc) == "'NoneType' object is not callable"
+
+# Rich equality (== and !=) tries strict subclass first even when inherited.
+eq_log = []
+
+
+class EqBase:
+    def __eq__(self, o):
+        eq_log.append((type(self).__name__, type(o).__name__))
+        return True
+
+
+class EqSubInherited(EqBase):
+    pass
+
+
+class EqSubOverride(EqBase):
+    def __eq__(self, o):
+        eq_log.append(('override', type(self).__name__, type(o).__name__))
+        return False
+
+
+assert EqBase() == EqSubInherited()
+assert eq_log == [('EqSubInherited', 'EqBase')]
+eq_log.clear()
+assert not (EqBase() == EqSubOverride())
+assert EqBase() != EqSubOverride()
+assert eq_log == [
+    ('override', 'EqSubOverride', 'EqBase'),
+    ('override', 'EqSubOverride', 'EqBase'),
+]
+
 print('success')
