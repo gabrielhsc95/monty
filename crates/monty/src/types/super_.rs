@@ -3,7 +3,7 @@
 use std::{borrow::Cow, fmt::Write};
 
 use super::{
-    LazyHeapSet, PyTrait, Type,
+    BuiltinType, LazyHeapSet, PyTrait, Type,
     class::{ClassBase, validate_init_subclass_args},
     instance::{BoundMethod, class_name, is_method_value},
     tuple::allocate_tuple,
@@ -217,7 +217,7 @@ fn type_or_class_name<'i>(val: &Value, vm: &'i VM<'_>) -> Cow<'i, str> {
             HeapData::HostClassType(ty) => Cow::Borrowed(ty.name(vm.interns)),
             _ => val.py_type_name(vm),
         },
-        Value::Builtin(Builtins::Type(t)) => t.name(vm.heap, vm.interns),
+        Value::Builtin(Builtins::Type(t)) => Type::from(*t).name(vm.heap, vm.interns),
         Value::Builtin(Builtins::ExcType(e)) => Cow::Borrowed((*e).into()),
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Cow::Borrowed("type"),
         _ => val.py_type_name(vm),
@@ -278,7 +278,7 @@ fn get_search_bases<'a>(type_arg: &Value, obj_arg: &Value, vm: &'a VM<'_>) -> Op
             .iter()
             .position(|b| matches!(b, ClassBase::BuiltinExc(exc) if exc == target_exc))?;
         Some(&self_class.mro()[pos + 1..])
-    } else if matches!(type_arg, Value::Builtin(Builtins::Type(Type::Object))) {
+    } else if matches!(type_arg, Value::Builtin(Builtins::Type(BuiltinType::Object))) {
         let pos = self_class.mro().iter().position(|b| matches!(b, ClassBase::Object))?;
         Some(&self_class.mro()[pos + 1..])
     } else {
@@ -353,7 +353,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
                         HeapData::HostClassType(ty) => Cow::Borrowed(ty.name(vm.interns)),
                         _ => obj.py_type_name(vm),
                     },
-                    Value::Builtin(Builtins::Type(t)) => t.name(vm.heap, vm.interns),
+                    Value::Builtin(Builtins::Type(t)) => Type::from(*t).name(vm.heap, vm.interns),
                     _ => obj.py_type_name(vm),
                 };
                 write!(f, "<super: <class '{type_name}'>, <{obj_type_name} object>>")?;
@@ -382,21 +382,37 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
         }
         if attr_str == "__self_class__" {
             let val = match &s.obj_arg {
-                Some(obj) => match obj {
-                    Value::Ref(id) => match vm.heap.get(*id) {
-                        HeapData::Instance(inst) => {
-                            let cid = inst.class();
-                            vm.heap.inc_ref(cid);
-                            Value::Ref(cid)
+                Some(Value::Ref(id)) => match vm.heap.get(*id) {
+                    HeapData::Instance(inst) => {
+                        let cid = inst.class();
+                        vm.heap.inc_ref(cid);
+                        Value::Ref(cid)
+                    }
+                    HeapData::Class(_) => {
+                        vm.heap.inc_ref(*id);
+                        Value::Ref(*id)
+                    }
+                    _ => {
+                        let t = Value::Ref(*id).py_type(vm);
+                        if t == Type::Type {
+                            Value::Builtin(Builtins::Function(BuiltinsFunctions::Type))
+                        } else {
+                            Value::Builtin(Builtins::Type(
+                                t.try_into().expect("instances return their class object"),
+                            ))
                         }
-                        HeapData::Class(_) => {
-                            vm.heap.inc_ref(*id);
-                            Value::Ref(*id)
-                        }
-                        _ => Value::Builtin(Builtins::Type(obj.py_type(vm))),
-                    },
-                    _ => Value::Builtin(Builtins::Type(obj.py_type(vm))),
+                    }
                 },
+                Some(obj) => {
+                    let t = obj.py_type(vm);
+                    if t == Type::Type {
+                        Value::Builtin(Builtins::Function(BuiltinsFunctions::Type))
+                    } else {
+                        Value::Builtin(Builtins::Type(
+                            t.try_into().expect("instances return their class object"),
+                        ))
+                    }
+                }
                 None => Value::None,
             };
             return Ok(Some(CallResult::Value(val)));

@@ -1,3 +1,4 @@
+mod builtin_type;
 /// Type definitions for Python runtime values.
 ///
 /// This module contains structured types that wrap heap-allocated data
@@ -23,6 +24,7 @@ pub mod generic_alias;
 pub mod hash_table;
 pub mod hashlib;
 pub mod host_class;
+pub(crate) mod inline_str;
 pub mod instance;
 pub mod iter;
 pub mod itertools;
@@ -53,6 +55,7 @@ mod unicode_type;
 mod unicode_type_data;
 pub mod union;
 
+pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::Class;
 pub(crate) use complex::Complex;
@@ -77,7 +80,7 @@ pub(crate) use namedtuple::{NamedTuple, NamedTupleClass};
 pub(crate) use partial::Partial;
 pub(crate) use path::Path;
 pub(crate) use property::Property;
-pub(crate) use py_trait::{CmpOrder, LazyHeapSet, PyTrait, attribute_name_value};
+pub(crate) use py_trait::{CmpOrder, LazyHeapSet, PyTrait};
 pub(crate) use random::{Random, SessionRandom};
 pub(crate) use range::{Range, RangeIterator};
 pub(crate) use re_match::ReMatch;

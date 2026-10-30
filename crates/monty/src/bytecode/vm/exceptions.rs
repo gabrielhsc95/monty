@@ -457,9 +457,13 @@ impl VM<'_> {
             // This is where the caller invoked the function that's failing.
             let call_offset = this.current_frame().call_offset;
 
+            // A raising module body must not stay cached; checked before the pop.
+            let is_initializer = this.current_frame().is_initializer;
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
             let should_return = this.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
+            let from_module_body = is_initializer && this.forget_failed_module();
 
             // Add caller frame info to traceback (if we have a call site).
             // Resolve the offset now — against the caller, which is the current
@@ -470,8 +474,8 @@ impl VM<'_> {
                 let pos = this.resolve_offset(off);
                 let frame_name = this.current_frame_name();
                 match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
                 }
             }
@@ -494,7 +498,10 @@ impl VM<'_> {
             // Get the caller's call-site offset before popping frame
             let call_offset = self.current_frame().call_offset;
 
+            let is_initializer = self.current_frame().is_initializer;
             let should_return = self.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
+            let from_module_body = is_initializer && self.forget_failed_module();
 
             // Add caller frame info to traceback. Resolve the offset against the
             // caller, which is the current frame after the pop above.
@@ -504,8 +511,8 @@ impl VM<'_> {
                 let pos = self.resolve_offset(off);
                 let frame_name = self.current_frame_name();
                 match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
                 }
             }
@@ -633,7 +640,7 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
 fn assert_msg_str(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let str_value = value.py_str(vm)?;
     defer_drop!(str_value, vm);
-    Ok(str_value.to_str(vm)?.to_owned())
+    Ok(str_value.as_str(vm).expect("py_str returns str").to_owned())
 }
 
 /// Byte-capped sink that stops repr formatting on a character boundary.
@@ -694,7 +701,7 @@ fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropG
         let (exc_val, this) = exc_guard.as_parts();
         if let Ok(text) = exc_val.py_str(this) {
             defer_drop!(text, this);
-            if let Ok(s) = text.to_str(this)
+            if let Some(s) = text.as_str(this)
                 && !s.is_empty()
             {
                 raise.exc.set_arg(Some(s.to_owned()));

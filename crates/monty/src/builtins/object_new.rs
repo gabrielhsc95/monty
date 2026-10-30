@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Dict, Instance, allocate_tuple},
+    types::{Dict, Instance, Type, allocate_tuple},
     value::Value,
 };
 
@@ -32,7 +32,7 @@ pub fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
         }
         Value::Builtin(Builtins::Type(t)) => {
             extra_args.drop_with(vm.heap);
-            let name = t.dunder_name(vm.heap, vm.interns);
+            let name = Type::from(*t).dunder_name(vm.heap, vm.interns);
             Err(ExcType::type_error(format!(
                 "object.__new__({name}) is not safe, use {name}.__new__()"
             )))
